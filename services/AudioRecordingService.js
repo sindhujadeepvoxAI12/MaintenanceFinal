@@ -1,6 +1,7 @@
-// AudioRecordingService.js - Record audio files for backend transcription
+// AudioRecordingService.js - FIXED for production builds with proper iOS configuration
 import { Audio } from 'expo-av';
 import * as FileSystem from 'expo-file-system';
+import { Platform } from 'react-native';
 
 class AudioRecordingService {
   constructor() {
@@ -9,6 +10,7 @@ class AudioRecordingService {
     this.audioUri = null;
     this.recordingDuration = 0;
     this.recordingInterval = null;
+    this.onDurationUpdate = null;
   }
 
   async requestPermissions() {
@@ -28,9 +30,12 @@ class AudioRecordingService {
     }
   }
 
-  async startRecording() {
+  async startRecording(onDurationUpdate = null) {
     try {
       console.log('[AudioRecording] Starting audio recording...');
+      
+      // Store duration callback
+      this.onDurationUpdate = onDurationUpdate;
       
       // Request permissions
       const hasPermission = await this.requestPermissions();
@@ -38,40 +43,42 @@ class AudioRecordingService {
         throw new Error('Audio recording permission not granted');
       }
 
-      // Set audio mode for recording
+      // FIXED: Use correct iOS audio mode configuration
       await Audio.setAudioModeAsync({
         allowsRecordingIOS: true,
         playsInSilentModeIOS: true,
         shouldDuckAndroid: true,
         playThroughEarpieceAndroid: false,
         staysActiveInBackground: false,
+        // FIXED: Use numeric constants instead of long strings
+        interruptionModeIOS: Audio.InterruptionModeIOS.DoNotMix,
+        interruptionModeAndroid: Audio.InterruptionModeAndroid.DoNotMix,
       });
 
-      // Create recording with high quality settings
+      // Use COMPATIBLE recording options for both dev and production
       const recordingOptions = {
-        ...Audio.RecordingOptionsPresets.HIGH_QUALITY,
         android: {
           extension: '.m4a',
-          outputFormat: Audio.RECORDING_OPTION_ANDROID_OUTPUT_FORMAT_MPEG_4,
-          audioEncoder: Audio.RECORDING_OPTION_ANDROID_AUDIO_ENCODER_AAC,
+          outputFormat: Audio.AndroidOutputFormat.MPEG_4,
+          audioEncoder: Audio.AndroidAudioEncoder.AAC,
           sampleRate: 44100,
-          numberOfChannels: 2,
-          bitRate: 128000,
+          numberOfChannels: 1,
+          bitRate: 96000,
         },
         ios: {
           extension: '.m4a',
-          outputFormat: Audio.RECORDING_OPTION_IOS_OUTPUT_FORMAT_MPEG4AAC,
-          audioQuality: Audio.RECORDING_OPTION_IOS_AUDIO_QUALITY_HIGH,
+          outputFormat: Audio.IOSOutputFormat.MPEG4AAC,
+          audioQuality: Audio.IOSAudioQuality.HIGH,
           sampleRate: 44100,
-          numberOfChannels: 2,
-          bitRate: 128000,
+          numberOfChannels: 1,
+          bitRate: 96000,
           linearPCMBitDepth: 16,
           linearPCMIsBigEndian: false,
           linearPCMIsFloat: false,
         },
         web: {
           mimeType: 'audio/webm;codecs=opus',
-          bitsPerSecond: 128000,
+          bitsPerSecond: 96000,
         },
       };
 
@@ -81,9 +88,13 @@ class AudioRecordingService {
       this.isRecording = true;
       this.recordingDuration = 0;
       
-      // Start duration counter
+      // Start REAL-TIME duration counter
       this.recordingInterval = setInterval(() => {
         this.recordingDuration += 1;
+        // Call duration update callback if provided
+        if (this.onDurationUpdate) {
+          this.onDurationUpdate(this.recordingDuration);
+        }
       }, 1000);
       
       console.log('[AudioRecording] Recording started successfully');
@@ -111,26 +122,43 @@ class AudioRecordingService {
       // Reset audio mode
       await Audio.setAudioModeAsync({
         allowsRecordingIOS: false,
+        playsInSilentModeIOS: false,
+        shouldDuckAndroid: false,
+        playThroughEarpieceAndroid: true,
+        staysActiveInBackground: false,
       });
       
       const uri = this.recording.getURI();
       this.audioUri = uri;
       
-      // Get recording info
+      // Get recording info and validate size
       const info = await FileSystem.getInfoAsync(uri);
       const duration = this.recordingDuration;
       
-      // Cleanup
-      this.cleanup();
-      
       console.log('[AudioRecording] Recording stopped. URI:', uri, 'Duration:', duration, 'seconds');
       console.log('[AudioRecording] File info:', info);
+      
+      // Check file size (10MB limit)
+      const maxSizeBytes = 10 * 1024 * 1024; // 10MB
+      if (info.size > maxSizeBytes) {
+        // Cleanup large file
+        await this.deleteRecording(uri);
+        this.cleanup();
+        return { 
+          success: false, 
+          error: `Recording too large: ${Math.round(info.size / 1024 / 1024)}MB (max: 10MB)` 
+        };
+      }
+      
+      // Cleanup interval but keep other data
+      this.clearDurationInterval();
       
       return { 
         success: true, 
         uri: uri,
         duration: duration,
-        fileSize: info.size || 0
+        fileSize: info.size || 0,
+        fileSizeFormatted: `${Math.round((info.size || 0) / 1024)}KB`
       };
       
     } catch (error) {
@@ -146,8 +174,12 @@ class AudioRecordingService {
       
       if (this.recording) {
         await this.recording.stopAndUnloadAsync();
+        
         await Audio.setAudioModeAsync({
           allowsRecordingIOS: false,
+          playsInSilentModeIOS: false,
+          shouldDuckAndroid: false,
+          playThroughEarpieceAndroid: true,
         });
         
         // Delete the recorded file
@@ -167,15 +199,19 @@ class AudioRecordingService {
     }
   }
 
-  cleanup() {
-    this.recording = null;
-    this.isRecording = false;
-    this.recordingDuration = 0;
-    
+  clearDurationInterval() {
     if (this.recordingInterval) {
       clearInterval(this.recordingInterval);
       this.recordingInterval = null;
     }
+  }
+
+  cleanup() {
+    this.recording = null;
+    this.isRecording = false;
+    this.recordingDuration = 0;
+    this.onDurationUpdate = null;
+    this.clearDurationInterval();
   }
 
   isCurrentlyRecording() {
@@ -208,6 +244,51 @@ class AudioRecordingService {
     const mins = Math.floor(seconds / 60);
     const secs = seconds % 60;
     return `${mins}:${secs.toString().padStart(2, '0')}`;
+  }
+
+  // Validate recording before upload
+  async validateRecording(uri) {
+    try {
+      if (!uri) {
+        return { valid: false, error: 'No recording URI provided' };
+      }
+
+      const info = await FileSystem.getInfoAsync(uri);
+      
+      if (!info.exists) {
+        return { valid: false, error: 'Recording file does not exist' };
+      }
+
+      // Check file size
+      const maxSizeBytes = 10 * 1024 * 1024; // 10MB
+      if (info.size > maxSizeBytes) {
+        return { 
+          valid: false, 
+          error: `File too large: ${Math.round(info.size / 1024 / 1024)}MB (max: 10MB)` 
+        };
+      }
+
+      const minSizeBytes = 1024; // 1KB
+      if (info.size < minSizeBytes) {
+        return { 
+          valid: false, 
+          error: 'Recording too short or corrupted' 
+        };
+      }
+
+      return {
+        valid: true,
+        fileInfo: {
+          size: info.size,
+          uri: uri,
+          sizeFormatted: `${Math.round(info.size / 1024)}KB`
+        }
+      };
+
+    } catch (error) {
+      console.error('[AudioRecording] Validation error:', error);
+      return { valid: false, error: `Validation failed: ${error.message}` };
+    }
   }
 }
 
