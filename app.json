@@ -13,8 +13,10 @@
       "infoPlist": {
         "NSMicrophoneUsageDescription": "This app needs access to microphone for voice recording functionality.",
         "NSCameraUsageDescription": "This app needs access to camera to take photos for maintenance records.",
-        "NSPhotoLibraryUsageDescription": "This app needs access to photo library to select images for maintenance records."
-      }
+        "NSPhotoLibraryUsageDescription": "This app needs access to photo library to select images for maintenance records.",
+        "UIBackgroundModes": ["audio"]
+      },
+      "bundleIdentifier": "com.deepvox.Maintainance"
     },
     "android": {
       "package": "com.deepvox.Maintainance",
@@ -22,8 +24,13 @@
         "android.permission.RECORD_AUDIO",
         "android.permission.CAMERA",
         "android.permission.READ_EXTERNAL_STORAGE",
-        "android.permission.WRITE_EXTERNAL_STORAGE"
-      ]
+        "android.permission.WRITE_EXTERNAL_STORAGE",
+        "android.permission.MODIFY_AUDIO_SETTINGS"
+      ],
+      "adaptiveIcon": {
+        "foregroundImage": "./assets/images/icon.png",
+        "backgroundColor": "#ffffff"
+      }
     },
     "web": {
       "bundler": "metro",
@@ -49,7 +56,13 @@
           "androidClientId": "334297696005-ilhbfcc7v56725om1mpfv8f1t1rf7ki9.apps.googleusercontent.com"
         }
       ],
-      "expo-secure-store"
+      "expo-secure-store",
+      [
+        "expo-av",
+        {
+          "microphonePermission": "This app uses the microphone for voice recording functionality."
+        }
+      ]
     ],
     "experiments": {
       "typedRoutes": true
