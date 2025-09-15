@@ -1,164 +1,123 @@
-// Voice service for speech recognition functionality
-// COMMENTED OUT DUE TO BUILD ISSUES WITH @react-native-voice/voice@3.2.4
-/*
-let Voice = null;
+// services/voiceService.js - Wrapper service for voice functionality
+import AudioRecordingService from './AudioRecordingService';
+import { uploadVoiceForTranscription, uploadVoiceWithProgress } from './BackendVoiceUploadService';
 
-// Import @react-native-voice/voice for voice-to-text functionality
-try {
-  Voice = require('@react-native-voice/voice').default || require('@react-native-voice/voice');
-} catch (error) {
-  console.log('@react-native-voice/voice not available');
-  Voice = null;
-}
-*/
-
-/*
 class VoiceService {
   constructor() {
     this.isRecording = false;
-    this.isSupported = !!Voice;
-    this.mockMode = !Voice;
-    this._unbindHandlers = null;
+    this.isTranscribing = false;
+    this.onTranscriptCallback = null;
+    this.onErrorCallback = null;
   }
 
-  async requestPermissions() {
-    if (this.mockMode) {
-      return false;
-    }
-    // @react-native-voice/voice does not provide a built-in permission API.
-    // Assume permissions are declared in app config and handled by the OS.
-    // If runtime permission handling is needed, integrate react-native-permissions.
-    return true;
-  }
-
-  async startRecording(onResult, onError) {
-    if (this.mockMode) {
-      onError('Voice recording requires a development build. Please build the app to use this feature.');
-      return false;
-    }
-
+  async startRecording(onTranscript, onError) {
     try {
-      // Ensure basic support and (optionally) permissions
-      const hasPermission = await this.requestPermissions();
-      if (!hasPermission) {
-        onError('Speech recognition permission denied');
-        return false;
-      }
-
-      if (this.isRecording) {
-        onError('Already recording');
-        return false;
-      }
-
-      this.isRecording = true;
+      console.log('[VoiceService] Starting recording...');
+      this.onTranscriptCallback = onTranscript;
+      this.onErrorCallback = onError;
       
-      // Bind event handlers
-      const handleResults = (event) => {
-        try {
-          const values = event && event.value ? event.value : [];
-          if (values.length > 0) {
-            onResult(values[0], true);
-          }
-        } catch (e) {
-          onError(e?.message || 'Failed to process speech results');
-        }
-      };
-
-      const handlePartialResults = (event) => {
-        try {
-          const values = event && event.value ? event.value : [];
-          if (values.length > 0) {
-            onResult(values[0], false);
-          }
-        } catch (e) {
-          // Ignore partial parse errors
-        }
-      };
-
-      const handleError = (event) => {
-        this.isRecording = false;
-        const message = (event && event.error && event.error.message) || event?.message || 'Speech recognition error';
-        onError(message);
-      };
-
-      // Newer versions support addListener; older use property assignment
-      if (typeof Voice.addListener === 'function') {
-        const subs = [
-          Voice.addListener('onSpeechResults', handleResults),
-          Voice.addListener('onSpeechPartialResults', handlePartialResults),
-          Voice.addListener('onSpeechError', handleError)
-        ];
-        this._unbindHandlers = () => {
-          subs.forEach((s) => {
-            try { s.remove(); } catch (_) {}
-          });
-        };
+      const result = await AudioRecordingService.startRecording();
+      
+      if (result.success) {
+        this.isRecording = true;
+        console.log('[VoiceService] Recording started successfully');
+        return true;
       } else {
-        Voice.onSpeechResults = handleResults;
-        Voice.onSpeechPartialResults = handlePartialResults;
-        Voice.onSpeechError = handleError;
-        this._unbindHandlers = () => {
-          try { Voice.onSpeechResults = null; } catch (_) {}
-          try { Voice.onSpeechPartialResults = null; } catch (_) {}
-          try { Voice.onSpeechError = null; } catch (_) {}
-        };
+        console.log('[VoiceService] Failed to start recording:', result.error);
+        if (onError) onError(result.error);
+        return false;
       }
-
-      await Voice.start('en-US');
-      return true;
     } catch (error) {
-      this.isRecording = false;
-      onError(error.message || 'Failed to start recording');
+      console.error('[VoiceService] Error starting recording:', error);
+      if (onError) onError(error.message);
       return false;
     }
   }
 
   async stopRecording() {
-    if (this.mockMode) {
-      this.isRecording = false;
-      return true;
-    }
-
     try {
-      if (!this.isRecording) {
-        return false;
-      }
-      await Voice.stop();
-      if (this._unbindHandlers) {
-        this._unbindHandlers();
-        this._unbindHandlers = null;
-      }
+      console.log('[VoiceService] Stopping recording...');
+      
+      const result = await AudioRecordingService.stopRecording();
       this.isRecording = false;
-      return true;
+      
+      if (result.success && result.uri) {
+        console.log('[VoiceService] Recording stopped, starting transcription...');
+        this.isTranscribing = true;
+        
+        // Start transcription
+        const transcriptionResult = await uploadVoiceForTranscription(result.uri);
+        
+        this.isTranscribing = false;
+        
+        if (transcriptionResult.success && transcriptionResult.transcription) {
+          console.log('[VoiceService] Transcription successful:', transcriptionResult.transcription);
+          
+          if (this.onTranscriptCallback) {
+            this.onTranscriptCallback(transcriptionResult.transcription, true);
+          }
+          
+          return {
+            success: true,
+            transcription: transcriptionResult.transcription,
+            audioUrl: transcriptionResult.audioUrl
+          };
+        } else {
+          console.log('[VoiceService] Transcription failed');
+          if (this.onErrorCallback) {
+            this.onErrorCallback('Transcription failed');
+          }
+          return { success: false, error: 'Transcription failed' };
+        }
+      } else {
+        console.log('[VoiceService] Recording failed:', result.error);
+        if (this.onErrorCallback) {
+          this.onErrorCallback(result.error || 'Recording failed');
+        }
+        return { success: false, error: result.error || 'Recording failed' };
+      }
     } catch (error) {
-      console.error('Error stopping recording:', error);
+      console.error('[VoiceService] Error stopping recording:', error);
       this.isRecording = false;
-      return false;
+      this.isTranscribing = false;
+      if (this.onErrorCallback) {
+        this.onErrorCallback(error.message);
+      }
+      return { success: false, error: error.message };
     }
   }
 
-  isCurrentlyRecording() {
-    return this.isRecording;
+  async cancelRecording() {
+    try {
+      console.log('[VoiceService] Cancelling recording...');
+      
+      const result = await AudioRecordingService.cancelRecording();
+      this.isRecording = false;
+      this.isTranscribing = false;
+      
+      return result;
+    } catch (error) {
+      console.error('[VoiceService] Error cancelling recording:', error);
+      this.isRecording = false;
+      this.isTranscribing = false;
+      return { success: false, error: error.message };
+    }
   }
 
-  isSpeechSupported() {
-    return this.isSupported;
+  getCurrentStatus() {
+    return {
+      isRecording: this.isRecording,
+      isTranscribing: this.isTranscribing,
+      recordingDuration: AudioRecordingService.getRecordingDuration()
+    };
+  }
+
+  cleanup() {
+    this.isRecording = false;
+    this.isTranscribing = false;
+    this.onTranscriptCallback = null;
+    this.onErrorCallback = null;
   }
 }
 
 export default new VoiceService();
-*/
-
-// Mock voice service to prevent build errors - voice functionality commented out
-const mockVoiceService = {
-  isRecording: false,
-  isSupported: false,
-  mockMode: true,
-  async requestPermissions() { return false; },
-  async startRecording() { return false; },
-  async stopRecording() { return false; },
-  isCurrentlyRecording() { return false; },
-  isSpeechSupported() { return false; }
-};
-
-export default mockVoiceService;

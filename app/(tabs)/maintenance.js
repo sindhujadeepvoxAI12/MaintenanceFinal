@@ -16,13 +16,15 @@ import {
 } from 'react-native';
 import { Colors } from '../../constants/Colors';
 import { useMachine } from '../../contexts/MachineContext';
-// import { useColorScheme } from '../../hooks/useColorScheme.js'; // Not needed - using light theme
 import * as ImagePicker from 'expo-image-picker';
 import { useAuth } from '../../contexts/AuthContext';
 import { getMachinesByUser } from '../../services/machineService';
 import { getTasksByWorker, updateTaskHistory } from '../../services/taskService';
 import { uploadImage } from '../../services/uploadService';
-// import voiceService from '../../services/voiceService'; // COMMENTED OUT DUE TO BUILD ISSUES
+
+// Import voice services
+import AudioRecordingService from '../../services/AudioRecordingService';
+import { uploadVoiceForTranscription, uploadVoiceWithProgress } from '../../services/BackendVoiceUploadService';
 
 const { width } = Dimensions.get('window');
 
@@ -56,15 +58,24 @@ export default function MaintenanceScreen() {
   const colorScheme = 'light'; // Force light theme
   const colors = Colors[colorScheme];
 
-  // API-backed machines (remove dummy/local data)
+  // API-backed machines
   const [apiMachines, setApiMachines] = useState([]);
   const [isFetching, setIsFetching] = useState(false);
   const [fetchError, setFetchError] = useState(null);
   const [tasks, setTasks] = useState([]);
-  const [noteModal, setNoteModal] = useState({ visible: false, historyId: null, note: '', voiceText: '', image: '' }); // voiceText kept for compatibility
+  const [noteModal, setNoteModal] = useState({ visible: false, historyId: null, note: '', voiceText: '', image: '' });
   const [imageViewer, setImageViewer] = useState({ visible: false, imageUrl: '' });
-  // const [isRecording, setIsRecording] = useState(false); // COMMENTED OUT - voice functionality disabled
-  // const [voiceText, setVoiceText] = useState(''); // COMMENTED OUT - voice functionality disabled
+  
+  // Voice recording state
+  const [isRecording, setIsRecording] = useState(false);
+  const [recordingDuration, setRecordingDuration] = useState(0);
+  const [voiceText, setVoiceText] = useState('');
+  const [isTranscribing, setIsTranscribing] = useState(false);
+  const [transcriptionProgress, setTranscriptionProgress] = useState('');
+  const [recordingUri, setRecordingUri] = useState('');
+
+  // Recording timer
+  const recordingTimer = useRef(null);
 
   const fetchMachines = async () => {
     if (!user?.id) return;
@@ -87,57 +98,186 @@ export default function MaintenanceScreen() {
     }
   };
 
-  // Voice recording functions - COMMENTED OUT DUE TO BUILD ISSUES
-  /*
+  // Voice recording functions using AudioRecordingService
   const startVoiceRecording = async () => {
     try {
-      const success = await voiceService.startRecording(
-        (transcript, isFinal) => {
-          setVoiceText(transcript);
-          if (isFinal) {
-            // Update the note modal with the final voice text
-            setNoteModal(prev => ({ ...prev, voiceText: transcript }));
-            // Add voice text to the notes field so it appears like manually entered text
-            setNoteModal(prev => ({ 
-              ...prev, 
-              note: prev.note + (prev.note ? ' ' : '') + transcript 
-            }));
-          }
-        },
-        (error) => {
-          console.error('Voice recording error:', error);
-          Alert.alert('Voice Recording Error', error);
-          setIsRecording(false);
-        }
-      );
+      console.log('=== STARTING VOICE RECORDING ===');
+      setVoiceText('');
+      setIsTranscribing(false);
+      setTranscriptionProgress('');
+      setRecordingDuration(0);
       
-      if (success) {
+      const result = await AudioRecordingService.startRecording();
+      
+      if (result.success) {
         setIsRecording(true);
+        setRecordingUri('');
+        
+        // Start timer for recording duration
+        recordingTimer.current = setInterval(() => {
+          setRecordingDuration(AudioRecordingService.getRecordingDuration());
+        }, 1000);
+        
+        console.log('[Voice] Recording started successfully');
+      } else {
+        console.log('[Voice] Failed to start recording:', result.error);
+        Alert.alert('Recording Error', result.error || 'Failed to start recording');
       }
     } catch (error) {
       console.error('Failed to start voice recording:', error);
-      Alert.alert('Error', 'Failed to start voice recording');
+      Alert.alert('Error', 'Failed to start voice recording: ' + error.message);
     }
   };
 
   const stopVoiceRecording = async () => {
     try {
-      await voiceService.stopRecording();
+      console.log('=== STOPPING VOICE RECORDING ===');
+      
+      // Clear timer
+      if (recordingTimer.current) {
+        clearInterval(recordingTimer.current);
+        recordingTimer.current = null;
+      }
+      
+      const result = await AudioRecordingService.stopRecording();
       setIsRecording(false);
+      
+      if (result.success && result.uri) {
+        console.log('[Voice] Recording stopped successfully, URI:', result.uri);
+        console.log('[Voice] Recording duration:', result.duration, 'seconds');
+        console.log('[Voice] File size:', result.fileSize, 'bytes');
+        
+        setRecordingUri(result.uri);
+        
+        // Start transcription process
+        await transcribeAudio(result.uri);
+      } else {
+        console.log('[Voice] Recording failed:', result.error);
+        Alert.alert('Recording Error', result.error || 'Failed to stop recording');
+      }
     } catch (error) {
       console.error('Failed to stop voice recording:', error);
-      Alert.alert('Error', 'Failed to stop voice recording');
+      Alert.alert('Error', 'Failed to stop voice recording: ' + error.message);
+      setIsRecording(false);
+    }
+  };
+
+  const cancelVoiceRecording = async () => {
+    try {
+      console.log('=== CANCELLING VOICE RECORDING ===');
+      
+      // Clear timer
+      if (recordingTimer.current) {
+        clearInterval(recordingTimer.current);
+        recordingTimer.current = null;
+      }
+      
+      const result = await AudioRecordingService.cancelRecording();
+      setIsRecording(false);
+      setRecordingDuration(0);
+      setVoiceText('');
+      setIsTranscribing(false);
+      setTranscriptionProgress('');
+      setRecordingUri('');
+      
+      console.log('[Voice] Recording cancelled');
+    } catch (error) {
+      console.error('Failed to cancel voice recording:', error);
+      setIsRecording(false);
+    }
+  };
+
+  const transcribeAudio = async (audioUri) => {
+    try {
+      console.log('=== STARTING TRANSCRIPTION ===');
+      console.log('[Voice] Audio URI:', audioUri);
+      
+      setIsTranscribing(true);
+      setTranscriptionProgress('Uploading audio...');
+      
+      // Use the backend voice upload service with progress tracking
+      const result = await uploadVoiceWithProgress(audioUri, (progress, message) => {
+        console.log('[Voice] Upload progress:', progress + '%', message);
+        setTranscriptionProgress(message);
+      });
+      
+      console.log('[Voice] Transcription result:', result);
+      
+      if (result.success && result.transcription) {
+        const transcribedText = result.transcription;
+        console.log('[Voice] Transcription successful:', transcribedText);
+        
+        setVoiceText(transcribedText);
+        setTranscriptionProgress('Transcription complete!');
+        
+        // Update the note modal with the transcribed text
+        setNoteModal(prev => ({ 
+          ...prev, 
+          voiceText: transcribedText,
+          note: prev.note + (prev.note ? ' ' : '') + transcribedText 
+        }));
+        
+        // Show success feedback
+        setTimeout(() => {
+          setTranscriptionProgress('');
+        }, 2000);
+        
+        console.log('[Voice] Voice text added to notes field');
+      } else {
+        console.log('[Voice] Transcription failed:', result);
+        setTranscriptionProgress('Transcription failed');
+        Alert.alert('Transcription Error', 'Failed to transcribe audio. Please try again.');
+        
+        setTimeout(() => {
+          setTranscriptionProgress('');
+        }, 3000);
+      }
+    } catch (error) {
+      console.error('[Voice] Transcription error:', error);
+      setTranscriptionProgress('Transcription failed');
+      Alert.alert('Transcription Error', error.message || 'Failed to transcribe audio');
+      
+      setTimeout(() => {
+        setTranscriptionProgress('');
+      }, 3000);
+    } finally {
+      setIsTranscribing(false);
     }
   };
 
   const handleVoiceButtonPress = () => {
     if (isRecording) {
       stopVoiceRecording();
+    } else if (isTranscribing) {
+      // If currently transcribing, show option to cancel
+      Alert.alert(
+        'Transcription in Progress',
+        'Audio transcription is currently in progress. Please wait for it to complete.',
+        [{ text: 'OK' }]
+      );
     } else {
       startVoiceRecording();
     }
   };
-  */
+
+  const handleVoiceLongPress = () => {
+    if (isRecording) {
+      Alert.alert(
+        'Cancel Recording',
+        'Do you want to cancel the current recording?',
+        [
+          { text: 'No', style: 'cancel' },
+          { text: 'Yes', onPress: cancelVoiceRecording, style: 'destructive' }
+        ]
+      );
+    }
+  };
+
+  const formatDuration = (seconds) => {
+    const mins = Math.floor(seconds / 60);
+    const secs = seconds % 60;
+    return `${mins}:${secs.toString().padStart(2, '0')}`;
+  };
 
   // ===== Task helpers for tabs (Due, Upcoming, History) =====
   const toDate = (value) => {
@@ -368,6 +508,19 @@ export default function MaintenanceScreen() {
     }
   }, [activeTab, overdueAnim, dueSoonAnim, upcomingAnim, goodAnim, overdueFloatAnim, dueSoonFloatAnim, upcomingFloatAnim, goodFloatAnim, overduePressAnim, dueSoonPressAnim, upcomingPressAnim, goodPressAnim]);
 
+  // Cleanup on unmount
+  useEffect(() => {
+    return () => {
+      if (recordingTimer.current) {
+        clearInterval(recordingTimer.current);
+      }
+      // Cancel any ongoing recording
+      if (isRecording) {
+        AudioRecordingService.cancelRecording();
+      }
+    };
+  }, [isRecording]);
+
   // Safety check - ensure machine context is available
   if (!machineContext) {
     return (
@@ -385,7 +538,6 @@ export default function MaintenanceScreen() {
     );
   }
 
-  // const { userMachines: _localUserMachines } = machineContext;
   const userMachines = apiMachines;
 
   const getMaintenanceStatus = (machine) => {
@@ -999,15 +1151,13 @@ export default function MaintenanceScreen() {
                         </View>
                       )}
                       
-                      {/* Voice text section - COMMENTED OUT DUE TO BUILD ISSUES */}
-                      {/*
+                      {/* Voice text section */}
                       {t.voiceText && (
                         <View style={styles.completionVoice}>
                           <Text style={[styles.completionVoiceLabel, { color: colors.tabIconDefault }]}>🎤 Voice Note:</Text>
                           <Text style={[styles.completionVoiceText, { color: colors.text }]}>{t.voiceText}</Text>
                         </View>
                       )}
-                      */}
                       
                       {/* Show image if available and valid */}
                       {t.image && typeof t.image === 'string' && t.image.startsWith('http') && (() => {
@@ -1233,8 +1383,6 @@ export default function MaintenanceScreen() {
         </Animated.View>
       )}
 
-      {/* Upcoming list intentionally omitted from Overview */}
-
       {getGoodMachines().length > 0 && (
         <Animated.View 
           style={[
@@ -1436,15 +1584,19 @@ export default function MaintenanceScreen() {
           </View>
         </Modal>
 
-        {/* Task Completion Modal */}
+        {/* Task Completion Modal with Voice Integration */}
         <Modal
           visible={noteModal.visible}
           transparent={true}
           animationType="fade"
           onRequestClose={() => {
             setNoteModal({ visible: false, historyId: null, note: '', voiceText: '', image: '' });
-            // setIsRecording(false); // COMMENTED OUT - voice functionality disabled
-            // setVoiceText(''); // COMMENTED OUT - voice functionality disabled
+            setIsRecording(false);
+            setVoiceText('');
+            setIsTranscribing(false);
+            if (recordingTimer.current) {
+              clearInterval(recordingTimer.current);
+            }
           }}
         >
           <View style={styles.modalOverlay}>
@@ -1470,33 +1622,65 @@ export default function MaintenanceScreen() {
                 textAlignVertical="top"
               />
 
-              {/* Voice button section - COMMENTED OUT DUE TO BUILD ISSUES */}
-              {/* 
-              <TouchableOpacity 
-                style={[
-                  styles.modalButton, 
-                  styles.voiceButton, 
-                  { 
-                    borderColor: colors.glowLight,
-                    backgroundColor: isRecording ? '#FF6B6B' : 'transparent'
-                  }
-                ]} 
-                onPress={handleVoiceButtonPress}
-              >
-                <Text style={[styles.modalButtonText, { color: colors.glowLight }]}>
-                  {isRecording ? '🛑 Stop Recording' : '🎤 Add Voice Note'}
-                </Text>
-              </TouchableOpacity>
-              {isRecording && (
-                <Text style={[styles.voiceTextPreview, { color: colors.text }]}>
-                  Voice: {voiceText}
-                </Text>
-              )}
-              */}
+              {/* Advanced Voice Recording Section */}
+              <View style={styles.voiceSection}>
+                <TouchableOpacity 
+                  style={[
+                    styles.voiceButton, 
+                    { 
+                      borderColor: isRecording ? '#FF6B6B' : colors.glowLight,
+                      backgroundColor: isRecording ? '#FF6B6B' : isTranscribing ? '#FFA500' : 'transparent'
+                    }
+                  ]} 
+                  onPress={handleVoiceButtonPress}
+                  onLongPress={handleVoiceLongPress}
+                  disabled={isTranscribing}
+                >
+                  <Text style={[styles.voiceButtonText, { color: isRecording ? '#FFFFFF' : colors.glowLight }]}>
+                    {isRecording ? '🛑 Stop Recording' : 
+                     isTranscribing ? '⏳ Processing...' : 
+                     '🎤 Add Voice Note'}
+                  </Text>
+                </TouchableOpacity>
 
+                {/* Recording Duration */}
+                {isRecording && (
+                  <View style={styles.recordingIndicator}>
+                    <View style={[styles.recordingDot, { backgroundColor: '#FF6B6B' }]} />
+                    <Text style={[styles.recordingText, { color: colors.text }]}>
+                      Recording: {formatDuration(recordingDuration)}
+                    </Text>
+                    <Text style={[styles.recordingHint, { color: colors.tabIconDefault }]}>
+                      Tap to stop, long press to cancel
+                    </Text>
+                  </View>
+                )}
+
+                {/* Transcription Progress */}
+                {isTranscribing && transcriptionProgress && (
+                  <View style={styles.transcriptionIndicator}>
+                    <Text style={[styles.transcriptionText, { color: colors.text }]}>
+                      {transcriptionProgress}
+                    </Text>
+                  </View>
+                )}
+
+                {/* Live Voice Text Preview */}
+                {!isRecording && !isTranscribing && voiceText && (
+                  <View style={styles.voiceTextContainer}>
+                    <Text style={[styles.voiceTextLabel, { color: colors.tabIconDefault }]}>
+                      🎤 Voice Note:
+                    </Text>
+                    <Text style={[styles.voiceTextDisplay, { color: colors.text }]}>
+                      {voiceText}
+                    </Text>
+                  </View>
+                )}
+              </View>
+
+              {/* Image Upload Button */}
               <TouchableOpacity 
                 style={[
-                  styles.modalButton, 
                   styles.imageButton, 
                   { 
                     borderColor: noteModal.image ? colors.buttonPrimary : colors.glowLight,
@@ -1538,103 +1722,49 @@ export default function MaintenanceScreen() {
                     console.log('[Maintenance] Image type:', asset.type);
                     
                     console.log('[Maintenance] Calling uploadImage API...');
-                    console.log('[Maintenance] Asset URI being uploaded:', asset.uri);
-                    console.log('[Maintenance] Asset type:', asset.type);
-                    console.log('[Maintenance] Asset file size:', asset.fileSize);
-                    
                     const uploadRes = await uploadImage(asset.uri);
                     console.log('[Maintenance] Upload API response:', uploadRes);
-                    console.log('[Maintenance] Upload API response type:', typeof uploadRes);
-                    console.log('[Maintenance] Upload API response keys:', Object.keys(uploadRes || {}));
-                    console.log('[Maintenance] Upload API response data keys:', Object.keys(uploadRes?.data || {}));
                     
-                    // Check if upload was successful
-                    if (uploadRes && uploadRes.success === true) {
-                      console.log('[Maintenance] ✅ Upload API returned success: true');
-                    } else {
-                      console.log('[Maintenance] ❌ Upload API did not return success: true');
-                      console.log('[Maintenance] Upload response success field:', uploadRes?.success);
-                    }
-                    
-                    // Expecting API to return an URL or data with file path
                     // Try multiple possible response structures
                     let imageUrl = null;
                     
                     if (uploadRes?.file_url) {
                       imageUrl = uploadRes.file_url;
-                      console.log('[Maintenance] Found image URL in uploadRes.file_url');
                     } else if (uploadRes?.url) {
                       imageUrl = uploadRes.url;
-                      console.log('[Maintenance] Found image URL in uploadRes.url');
                     } else if (uploadRes?.data?.file_url) {
                       imageUrl = uploadRes.data.file_url;
-                      console.log('[Maintenance] Found image URL in uploadRes.data.file_url');
                     } else if (uploadRes?.data?.url) {
                       imageUrl = uploadRes.data.url;
-                      console.log('[Maintenance] Found image URL in uploadRes.data.url');
                     } else if (uploadRes?.path) {
                       imageUrl = uploadRes.path;
-                      console.log('[Maintenance] Found image URL in uploadRes.path');
                     } else if (uploadRes?.fileUrl) {
                       imageUrl = uploadRes.fileUrl;
-                      console.log('[Maintenance] Found image URL in uploadRes.fileUrl');
                     } else if (uploadRes?.data?.path) {
                       imageUrl = uploadRes.data.path;
-                      console.log('[Maintenance] Found image URL in uploadRes.data.path');
                     } else if (uploadRes?.data?.fileUrl) {
                       imageUrl = uploadRes.data.fileUrl;
-                      console.log('[Maintenance] Found image URL in uploadRes.data.fileUrl');
                     } else if (uploadRes?.imageUrl) {
                       imageUrl = uploadRes.imageUrl;
-                      console.log('[Maintenance] Found image URL in uploadRes.imageUrl');
                     } else if (uploadRes?.data?.imageUrl) {
                       imageUrl = uploadRes.data.imageUrl;
-                      console.log('[Maintenance] Found image URL in uploadRes.data.imageUrl');
-                    } else {
-                      // Last resort: check if the response itself is a string URL
-                      if (typeof uploadRes === 'string' && uploadRes.startsWith('http')) {
-                        imageUrl = uploadRes;
-                        console.log('[Maintenance] Found image URL as direct string response');
-                      } else {
-                        console.warn('[Maintenance] No valid image URL found in API response');
-                        console.warn('[Maintenance] Full API response structure:', JSON.stringify(uploadRes, null, 2));
-                        console.warn('[Maintenance] This means the upload failed - not storing any image URL');
-                        imageUrl = null; // Don't use local URI, it will cause errors
-                      }
+                    } else if (typeof uploadRes === 'string' && uploadRes.startsWith('http')) {
+                      imageUrl = uploadRes;
                     }
                     
                     console.log('[Maintenance] Final image URL:', imageUrl);
-                    console.log('[Maintenance] Image URL type:', typeof imageUrl);
-                    console.log('[Maintenance] Image URL length:', imageUrl?.length || 0);
                     
                     // Only store the image URL if it's a valid HTTP URL from the API
                     if (imageUrl && imageUrl.startsWith('http')) {
                       setNoteModal(prev => ({ ...prev, image: imageUrl }));
                       console.log('[Maintenance] ✅ Image uploaded successfully!');
-                      console.log('[Maintenance] Image URL stored in modal:', imageUrl);
-                      console.log('=== END IMAGE UPLOAD DEBUG ===');
-                      
                       Alert.alert('Success', 'Image uploaded and attached to this task!');
-                    } else if (imageUrl === null) {
-                      console.error('[Maintenance] ❌ Image upload failed - no URL returned from API');
-                      console.log('=== END IMAGE UPLOAD DEBUG (FAILED) ===');
-                      
-                      Alert.alert('Upload Failed', 'Image upload failed. Please check your internet connection and try again.');
                     } else {
-                      console.error('[Maintenance] ❌ Invalid image URL - not storing');
-                      console.error('[Maintenance] Image URL:', imageUrl);
-                      console.error('[Maintenance] Image URL type:', typeof imageUrl);
-                      console.error('[Maintenance] Image URL starts with http:', imageUrl?.startsWith('http'));
-                      console.log('=== END IMAGE UPLOAD DEBUG (FAILED) ===');
-                      
-                      Alert.alert('Upload Failed', 'Image upload failed. Please try again.');
+                      console.error('[Maintenance] ❌ Image upload failed - no valid URL returned');
+                      Alert.alert('Upload Failed', 'Image upload failed. Please check your internet connection and try again.');
                     }
                   } catch (e) {
-                    console.error('=== IMAGE UPLOAD ERROR ===');
                     console.error('[Maintenance] Image upload error:', e);
-                    console.error('[Maintenance] Error message:', e.message);
-                    console.error('[Maintenance] Error stack:', e.stack);
-                    console.error('=== END IMAGE UPLOAD ERROR ===');
                     Alert.alert('Upload Failed', e?.message || 'Could not upload image');
                   }
                 }}
@@ -1661,8 +1791,12 @@ export default function MaintenanceScreen() {
                   style={[styles.modalButton, styles.cancelButton]}
                   onPress={() => {
                     setNoteModal({ visible: false, historyId: null, note: '', voiceText: '', image: '' });
-                    // setIsRecording(false); // COMMENTED OUT - voice functionality disabled
-                    // setVoiceText(''); // COMMENTED OUT - voice functionality disabled
+                    setIsRecording(false);
+                    setVoiceText('');
+                    setIsTranscribing(false);
+                    if (recordingTimer.current) {
+                      clearInterval(recordingTimer.current);
+                    }
                   }}
                 >
                   <Text style={[styles.modalButtonText, { color: colors.tabIconDefault }]}>
@@ -1681,13 +1815,8 @@ export default function MaintenanceScreen() {
                       console.log('[Maintenance] Notes Field (includes voice text):', noteModal.note);
                       console.log('[Maintenance] Voice Text (separate):', noteModal.voiceText);
                       console.log('[Maintenance] Image URL:', noteModal.image);
-                      console.log('[Maintenance] Image URL Type:', typeof noteModal.image);
-                      console.log('[Maintenance] Image URL Length:', noteModal.image?.length || 0);
                       
-                      // Voice text is already added to the notes field, so use it directly
                       const finalNote = noteModal.note || '';
-
-                      console.log('[Maintenance] Final Note (includes voice text):', finalNote);
 
                       const updateData = {
                         status: 'completed',
@@ -1698,137 +1827,25 @@ export default function MaintenanceScreen() {
                         image: noteModal.image || ''
                       };
                       
-                      console.log('[Maintenance] Image URL being sent to update API:', noteModal.image);
-                      
-                      // Validate image URL
-                      if (noteModal.image && noteModal.image.startsWith('http')) {
-                        console.log('[Maintenance] ✅ Valid image URL from upload API');
-                      } else if (noteModal.image && noteModal.image.startsWith('file://')) {
-                        console.log('[Maintenance] ⚠️ Using local file URI instead of uploaded URL');
-                      } else {
-                        console.log('[Maintenance] ⚠️ No image URL provided');
-                      }
-                      
                       console.log('[Maintenance] Sending update data to API:', JSON.stringify(updateData, null, 2));
-                      console.log('[Maintenance] Calling updateTaskHistory API...');
-                      console.log('[Maintenance] Task ID being updated:', noteModal.historyId);
-                      console.log('[Maintenance] Image URL being sent:', updateData.image);
-                      console.log('[Maintenance] Image URL type:', typeof updateData.image);
-                      console.log('[Maintenance] Image URL length:', updateData.image?.length || 0);
-                      
-                      console.log('[Maintenance] ===== UPDATE TASK API CALL START =====');
-                      console.log('[Maintenance] API Endpoint: PUT /updateTaskHistory/' + noteModal.historyId);
-                      console.log('[Maintenance] Request payload:', {
-                        details: updateData
-                      });
-                      console.log('[Maintenance] ⚠️ CRITICAL: About to call updateTaskHistory API');
-                      console.log('[Maintenance] ⚠️ If you don\'t see API logs after this, the call is failing!');
-                      
                       const result = await updateTaskHistory(noteModal.historyId, updateData);
-                      
-                      console.log('[Maintenance] ===== UPDATE TASK API CALL END =====');
-                      console.log('[Maintenance] API Response status:', result?.success);
                       console.log('[Maintenance] API Response:', result);
-                      console.log('[Maintenance] API Response type:', typeof result);
-                      console.log('[Maintenance] API Response keys:', Object.keys(result || {}));
                       
-                      // Check if the API call was successful
-                      if (result?.success === true) {
-                        console.log('[Maintenance] ✅ API call successful');
-                      } else if (result?.success === false) {
-                        console.log('[Maintenance] ❌ API call failed - success: false');
-                        console.log('[Maintenance] Error message:', result?.message);
-                      } else {
-                        console.log('[Maintenance] ⚠️ API call status unclear - no success field');
-                      }
-                      
-                      // Check if image was saved in response
-                      if (result?.details?.image) {
-                        console.log('[Maintenance] ✅ Image saved in backend:', result.details.image);
-                      } else if (result?.image) {
-                        console.log('[Maintenance] ✅ Image saved in backend (root level):', result.image);
-                      } else {
-                        console.log('[Maintenance] ❌ Image NOT saved in backend response');
-                        console.log('[Maintenance] Full response structure:', JSON.stringify(result, null, 2));
-                      }
-                      
-                      // Check if other fields were saved
-                      if (result?.details?.note) {
-                        console.log('[Maintenance] ✅ Note saved in backend:', result.details.note);
-                      } else {
-                        console.log('[Maintenance] ❌ Note NOT saved in backend');
-                      }
-                      
-                      if (result?.details?.status) {
-                        console.log('[Maintenance] ✅ Status saved in backend:', result.details.status);
-                      } else {
-                        console.log('[Maintenance] ❌ Status NOT saved in backend');
-                      }
-                      
-                      // Wait a moment for the API to process the update
-                      console.log('[Maintenance] Waiting for API to process update...');
+                      // Wait for API to process
                       await new Promise(resolve => setTimeout(resolve, 1000));
                       
                       console.log('[Maintenance] Refreshing task list...');
                       await fetchMachines();
                       
-                      // Force a UI refresh to show updated data
-                      console.log('[Maintenance] Forcing UI refresh...');
-                      setTasks([]); // Clear current tasks
-                      await new Promise(resolve => setTimeout(resolve, 500)); // Small delay
-                      await fetchMachines(); // Fetch fresh data
-                      
                       setNoteModal({ visible: false, historyId: null, note: '', voiceText: '', image: '' });
+                      setIsRecording(false);
+                      setVoiceText('');
+                      setIsTranscribing(false);
+                      
                       console.log('[Maintenance] ✅ Task completed successfully!');
-                      console.log('=== END TASK COMPLETION DEBUG ===');
-                      
-                      // Final verification - check if task data was saved
-                      console.log('=== FINAL VERIFICATION ===');
-                      console.log('[Maintenance] Verifying saved data...');
-                      console.log('[Maintenance] Task should now show as completed in the UI');
-                      console.log('[Maintenance] Image should be visible in completion details');
-                      
-                      // Additional verification - fetch the task again to confirm it was saved
-                      console.log('[Maintenance] Fetching updated task data for verification...');
-                      try {
-                        const updatedTasks = await getTasksByWorker(user.id);
-                        const updatedTask = updatedTasks.find(task => task.id === noteModal.historyId);
-                        if (updatedTask) {
-                          console.log('[Maintenance] Updated task data:', {
-                            id: updatedTask.id,
-                            status: updatedTask.status,
-                            startTime: updatedTask.startTime,
-                            endTime: updatedTask.endTime,
-                            note: updatedTask.note,
-                            image: updatedTask.image,
-                            imageType: typeof updatedTask.image,
-                            imageLength: updatedTask.image?.length || 0
-                          });
-                          
-                          if (updatedTask.image) {
-                            console.log('[Maintenance] ✅ Image successfully saved in backend!');
-                          } else {
-                            console.log('[Maintenance] ❌ Image NOT saved in backend - still null');
-                          }
-                        } else {
-                          console.log('[Maintenance] ❌ Could not find updated task in API response');
-                        }
-                      } catch (error) {
-                        console.error('[Maintenance] Error verifying task data:', error);
-                      }
-                      console.log('=== END FINAL VERIFICATION ===');
-                      
-                      Alert.alert('Success', 'Task completed successfully! All data has been saved to the backend.');
-                      // Reset voice state and close modal - voice functionality commented out
-                      setNoteModal({ visible: false, historyId: null, note: '', voiceText: '', image: '' });
-                      // setIsRecording(false); // COMMENTED OUT - voice functionality disabled
-                      // setVoiceText(''); // COMMENTED OUT - voice functionality disabled
+                      Alert.alert('Success', 'Task completed successfully! All data has been saved.');
                     } catch (error) {
-                      console.error('=== TASK COMPLETION ERROR ===');
                       console.error('[Maintenance] Error completing task:', error);
-                      console.error('[Maintenance] Error message:', error.message);
-                      console.error('[Maintenance] Error stack:', error.stack);
-                      console.error('=== END ERROR DEBUG ===');
                       Alert.alert('Error', 'Failed to complete task: ' + error.message);
                     }
                   }}
@@ -1851,14 +1868,12 @@ export default function MaintenanceScreen() {
           onRequestClose={() => setImageViewer({ visible: false, imageUrl: '' })}
         >
           <View style={styles.imageViewerOverlay}>
-            {/* Background overlay - tap to close */}
             <TouchableOpacity 
               style={styles.imageViewerCloseArea}
               activeOpacity={1}
               onPress={() => setImageViewer({ visible: false, imageUrl: '' })}
             />
             
-            {/* Image container - don't close when tapped */}
             <TouchableOpacity 
               style={styles.imageViewerContainer}
               activeOpacity={1}
@@ -1880,7 +1895,6 @@ export default function MaintenanceScreen() {
                   resizeMode="contain"
                   onError={(error) => {
                     console.error('[Maintenance] Full-screen image load error:', error);
-                    console.error('[Maintenance] Image URL that failed:', imageViewer.imageUrl);
                   }}
                   onLoad={() => {
                     console.log('[Maintenance] Full-screen image loaded successfully:', imageViewer.imageUrl);
@@ -1921,15 +1935,6 @@ const styles = StyleSheet.create({
   headerSubtitle: {
     fontSize: 16,
     opacity: 0.8,
-  },
-  addButton: {
-    paddingVertical: 8,
-    paddingHorizontal: 12,
-    borderRadius: 12,
-  },
-  addButtonText: {
-    fontSize: 24,
-    fontWeight: 'bold',
   },
   tabBar: {
     flexDirection: 'row',
@@ -2177,7 +2182,8 @@ const styles = StyleSheet.create({
     backgroundColor: 'rgba(255, 255, 255, 0.95)',
     borderRadius: 15,
     padding: 25,
-    width: '80%',
+    width: '90%',
+    maxHeight: '80%',
     alignItems: 'center',
     shadowColor: '#000',
     shadowOffset: { width: 0, height: 2 },
@@ -2203,6 +2209,88 @@ const styles = StyleSheet.create({
     fontSize: 16,
     minHeight: 100,
     textAlignVertical: 'top',
+    marginBottom: 15,
+  },
+  
+  // Enhanced Voice Recording Styles
+  voiceSection: {
+    width: '100%',
+    marginBottom: 15,
+  },
+  voiceButton: {
+    borderWidth: 2,
+    borderRadius: 12,
+    paddingVertical: 12,
+    paddingHorizontal: 20,
+    alignItems: 'center',
+    justifyContent: 'center',
+    marginBottom: 10,
+  },
+  voiceButtonText: {
+    fontSize: 16,
+    fontWeight: '600',
+  },
+  recordingIndicator: {
+    alignItems: 'center',
+    padding: 15,
+    backgroundColor: 'rgba(255, 107, 107, 0.1)',
+    borderRadius: 10,
+    borderWidth: 1,
+    borderColor: 'rgba(255, 107, 107, 0.3)',
+  },
+  recordingDot: {
+    width: 12,
+    height: 12,
+    borderRadius: 6,
+    marginBottom: 8,
+  },
+  recordingText: {
+    fontSize: 16,
+    fontWeight: 'bold',
+    marginBottom: 4,
+  },
+  recordingHint: {
+    fontSize: 12,
+    textAlign: 'center',
+  },
+  transcriptionIndicator: {
+    alignItems: 'center',
+    padding: 15,
+    backgroundColor: 'rgba(255, 165, 0, 0.1)',
+    borderRadius: 10,
+    borderWidth: 1,
+    borderColor: 'rgba(255, 165, 0, 0.3)',
+  },
+  transcriptionText: {
+    fontSize: 14,
+    fontWeight: '600',
+    textAlign: 'center',
+  },
+  voiceTextContainer: {
+    padding: 12,
+    backgroundColor: 'rgba(0, 255, 0, 0.1)',
+    borderRadius: 10,
+    borderWidth: 1,
+    borderColor: 'rgba(0, 255, 0, 0.3)',
+  },
+  voiceTextLabel: {
+    fontSize: 12,
+    fontWeight: '600',
+    marginBottom: 5,
+  },
+  voiceTextDisplay: {
+    fontSize: 14,
+    lineHeight: 20,
+    fontStyle: 'italic',
+  },
+  
+  imageButton: {
+    borderWidth: 1,
+    borderRadius: 10,
+    paddingVertical: 10,
+    paddingHorizontal: 15,
+    alignItems: 'center',
+    marginBottom: 15,
   },
   modalButtons: {
     flexDirection: 'row',
@@ -2215,6 +2303,9 @@ const styles = StyleSheet.create({
     paddingHorizontal: 20,
     borderRadius: 10,
     borderWidth: 1,
+    flex: 1,
+    marginHorizontal: 5,
+    alignItems: 'center',
   },
   cancelButton: {
     borderColor: '#E5E7EB',
@@ -2226,13 +2317,6 @@ const styles = StyleSheet.create({
   modalButtonText: {
     fontSize: 16,
     fontWeight: '600',
-  },
-  imageButton: {
-    borderWidth: 1,
-    borderColor: '#E5E7EB',
-    marginTop: 5,
-    paddingVertical: 8,
-    paddingHorizontal: 15,
   },
   actionButton: {
     paddingVertical: 8,
@@ -2283,6 +2367,22 @@ const styles = StyleSheet.create({
     marginBottom: 5,
   },
   completionNoteText: {
+    fontSize: 14,
+    lineHeight: 20,
+    fontStyle: 'italic',
+  },
+  completionVoice: {
+    marginTop: 10,
+    paddingTop: 10,
+    borderTopWidth: 1,
+    borderTopColor: '#E5E7EB',
+  },
+  completionVoiceLabel: {
+    fontSize: 12,
+    fontWeight: '500',
+    marginBottom: 5,
+  },
+  completionVoiceText: {
     fontSize: 14,
     lineHeight: 20,
     fontStyle: 'italic',

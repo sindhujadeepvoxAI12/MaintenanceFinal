@@ -9,7 +9,21 @@
     "userInterfaceStyle": "automatic",
     "newArchEnabled": true,
     "ios": {
-      "supportsTablet": true
+      "supportsTablet": true,
+      "infoPlist": {
+        "NSMicrophoneUsageDescription": "This app needs access to microphone for voice recording functionality.",
+        "NSCameraUsageDescription": "This app needs access to camera to take photos for maintenance records.",
+        "NSPhotoLibraryUsageDescription": "This app needs access to photo library to select images for maintenance records."
+      }
+    },
+    "android": {
+      "package": "com.deepvox.Maintainance",
+      "permissions": [
+        "android.permission.RECORD_AUDIO",
+        "android.permission.CAMERA",
+        "android.permission.READ_EXTERNAL_STORAGE",
+        "android.permission.WRITE_EXTERNAL_STORAGE"
+      ]
     },
     "web": {
       "bundler": "metro",
@@ -45,9 +59,6 @@
       "eas": {
         "projectId": "e684609e-3fba-4263-b2cb-0016db1eea1b"
       }
-    },
-    "android": {
-      "package": "com.deepvox.Maintainance"
     }
   }
 }

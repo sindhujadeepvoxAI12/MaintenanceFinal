@@ -1,4 +1,4 @@
-// BackendVoiceUploadService.js - Upload audio to backend for transcription
+// BackendVoiceUploadService.js - Fixed to match your API requirements
 /**
  * Upload audio file to backend and get transcription
  * @param {string} audioUri - Local file URI of the audio recording
@@ -12,64 +12,86 @@ export const uploadVoiceForTranscription = async (audioUri) => {
         throw new Error('No audio file to upload');
       }
   
-      // Create FormData for file upload
+      // Create FormData EXACTLY like your API example
       const formData = new FormData();
       
-      // Add the audio file to FormData
-      // Note: The file extension should match your recording format (.m4a, .wav, .mp3)
+      // Match your exact FormData structure
       formData.append('audio', {
         uri: audioUri,
-        type: 'audio/m4a', // Expo records in m4a format by default
-        name: `voice_recording_${Date.now()}.m4a`,
+        type: 'audio/m4a', // or 'audio/wav' depending on what AudioRecordingService produces
+        name: `voice_recording_${Date.now()}.m4a`, // or .wav
+      });
+
+      console.log('[BackendVoiceUpload] FormData created:', {
+        audioUri,
+        fileName: `voice_recording_${Date.now()}.m4a`
       });
   
-      // Add additional metadata if your backend needs it
-      formData.append('timestamp', new Date().toISOString());
-      formData.append('type', 'voice_transcription');
+      console.log('[BackendVoiceUpload] Making API call to:', 'https://backendaimaintenance.deepvox.ai/api/v1/upload-voice');
   
-      console.log('[BackendVoiceUpload] Uploading to backend...');
-  
-      const response = await fetch('https://backendaimaintenance.deepvox.ai/api/v1/upload-voice', {
-        method: 'POST',
+      // Match your exact fetch structure
+      const requestOptions = {
+        method: "POST",
         body: formData,
-        headers: {
-          'Content-Type': 'multipart/form-data',
-          // Add authentication headers if needed
-          // 'Authorization': `Bearer ${token}`,
-        },
-      });
+        // NOTE: Don't set Content-Type header for FormData in React Native
+        // React Native will set it automatically with boundary
+      };
+
+      const response = await fetch('https://backendaimaintenance.deepvox.ai/api/v1/upload-voice', requestOptions);
   
       console.log('[BackendVoiceUpload] Response status:', response.status);
+      console.log('[BackendVoiceUpload] Response ok:', response.ok);
   
+      // Get response as text first (like your API example)
+      const result = await response.text();
+      console.log('[BackendVoiceUpload] Raw response text:', result);
+
       if (!response.ok) {
-        const errorText = await response.text();
-        throw new Error(`Upload failed with status ${response.status}: ${errorText}`);
+        throw new Error(`Upload failed with status ${response.status}: ${result}`);
+      }
+      
+      // Try to parse the response
+      let parsedResult;
+      try {
+        // Try parsing as JSON first
+        parsedResult = JSON.parse(result);
+        console.log('[BackendVoiceUpload] Parsed as JSON:', parsedResult);
+      } catch (parseError) {
+        console.log('[BackendVoiceUpload] Response is not JSON, treating as plain text transcription');
+        // If it's not JSON, treat the entire response as transcription text
+        parsedResult = {
+          transcription: result.trim(),
+          success: true
+        };
       }
   
-      const result = await response.json();
-      console.log('[BackendVoiceUpload] Upload successful:', result);
-  
-      // Process the backend response
-      const processedResult = processBackendResponse(result);
+      // Process the result
+      const processedResult = processBackendResponse(parsedResult);
+      console.log('[BackendVoiceUpload] Final processed result:', processedResult);
       
       return {
         success: true,
         transcription: processedResult.transcription,
         audioUrl: processedResult.audioUrl,
-        originalResponse: result
+        originalResponse: parsedResult
       };
   
     } catch (error) {
-      console.error('[BackendVoiceUpload] Upload error:', error);
+      console.error('[BackendVoiceUpload] Detailed upload error:', {
+        message: error.message,
+        stack: error.stack,
+        name: error.name,
+        audioUri
+      });
       
       // For development/testing - return mock transcription
       if (__DEV__) {
-        console.log('[BackendVoiceUpload] DEV MODE: Returning mock transcription');
+        console.log('[BackendVoiceUpload] DEV MODE: Returning mock transcription due to error');
         return {
           success: true,
-          transcription: 'This is a mock transcription for development testing.',
+          transcription: 'Mock transcription: The voice recording was successful but API failed.',
           audioUrl: `mock://voice_upload_${Date.now()}.m4a`,
-          message: 'Mock transcription (development mode)'
+          message: 'Mock transcription (development mode - API error)'
         };
       }
       
@@ -78,121 +100,141 @@ export const uploadVoiceForTranscription = async (audioUri) => {
   };
   
   /**
-   * Process backend response to extract transcription and audio URL
-   * Adjust based on your actual backend API response structure
+   * Process backend response to extract transcription
+   * Updated to handle your API's response format
    */
   export const processBackendResponse = (backendResponse) => {
     console.log('[BackendVoiceUpload] Processing backend response:', backendResponse);
     
-    // Example backend response formats you might receive:
-    
-    // Format 1: Direct transcription as string
+    // If the response is already a string, treat it as transcription
     if (typeof backendResponse === 'string') {
       return {
-        transcription: backendResponse,
+        transcription: backendResponse.trim(),
         audioUrl: null
       };
     }
     
-    // Format 2: Object with transcription field
-    if (backendResponse.transcription) {
-      return {
-        transcription: backendResponse.transcription,
-        audioUrl: backendResponse.audioUrl || backendResponse.file_url || backendResponse.url
-      };
-    }
-    
-    // Format 3: Object with text field
-    if (backendResponse.text) {
-      return {
-        transcription: backendResponse.text,
-        audioUrl: backendResponse.url || backendResponse.file_url || backendResponse.audioUrl
-      };
-    }
-    
-    // Format 4: Object with transcript field
-    if (backendResponse.transcript) {
-      return {
-        transcription: backendResponse.transcript,
-        audioUrl: backendResponse.audioUrl || backendResponse.file_url || backendResponse.url
-      };
-    }
-    
-    // Format 5: Nested data structure
-    if (backendResponse.data) {
-      return processBackendResponse(backendResponse.data);
-    }
-    
-    // Format 6: Result field
-    if (backendResponse.result) {
-      return processBackendResponse(backendResponse.result);
-    }
-    
-    // Format 7: Check for common transcription field names
-    const transcriptionFields = ['transcription', 'text', 'transcript', 'result', 'content', 'speech_to_text'];
-    const audioUrlFields = ['audioUrl', 'file_url', 'url', 'audio_url', 'file_path', 'download_url'];
-    
-    let transcription = '';
-    let audioUrl = '';
-    
-    // Find transcription
-    for (const field of transcriptionFields) {
-      if (backendResponse[field]) {
-        transcription = backendResponse[field];
-        break;
+    // If it's an object, look for common transcription fields
+    if (typeof backendResponse === 'object' && backendResponse !== null) {
+      
+      // Check for direct transcription fields
+      const transcriptionFields = [
+        'transcription', 
+        'text', 
+        'transcript', 
+        'result', 
+        'content', 
+        'speech_to_text',
+        'message',
+        'data'
+      ];
+      
+      let transcription = '';
+      
+      for (const field of transcriptionFields) {
+        if (backendResponse[field] && typeof backendResponse[field] === 'string') {
+          transcription = backendResponse[field];
+          break;
+        }
       }
-    }
-    
-    // Find audio URL
-    for (const field of audioUrlFields) {
-      if (backendResponse[field]) {
-        audioUrl = backendResponse[field];
-        break;
+      
+      // If still no transcription found, try nested data
+      if (!transcription && backendResponse.data && typeof backendResponse.data === 'object') {
+        for (const field of transcriptionFields) {
+          if (backendResponse.data[field] && typeof backendResponse.data[field] === 'string') {
+            transcription = backendResponse.data[field];
+            break;
+          }
+        }
       }
+      
+      // Look for audio URL
+      const audioUrlFields = ['audioUrl', 'file_url', 'url', 'audio_url', 'file_path', 'download_url'];
+      let audioUrl = '';
+      
+      for (const field of audioUrlFields) {
+        if (backendResponse[field]) {
+          audioUrl = backendResponse[field];
+          break;
+        }
+      }
+      
+      return {
+        transcription: transcription || 'No transcription found in response',
+        audioUrl: audioUrl || ''
+      };
     }
     
-    // Default fallback
+    // Fallback
     return {
-      transcription: transcription || backendResponse.transcript || backendResponse.result || '',
-      audioUrl: audioUrl || ''
+      transcription: 'Unable to parse transcription from response',
+      audioUrl: ''
     };
   };
   
   /**
-   * Alternative upload function with retry mechanism
+   * Upload with progress callback - updated for your API
    */
-  export const uploadVoiceWithRetry = async (audioUri, maxRetries = 3) => {
-    let lastError;
-    
-    for (let attempt = 1; attempt <= maxRetries; attempt++) {
-      try {
-        console.log(`[BackendVoiceUpload] Upload attempt ${attempt}/${maxRetries}`);
-        
-        const result = await uploadVoiceForTranscription(audioUri);
-        
-        // If successful, return result
-        if (result.success) {
-          console.log(`[BackendVoiceUpload] Upload successful on attempt ${attempt}`);
-          return result;
-        }
-        
-      } catch (error) {
-        lastError = error;
-        console.error(`[BackendVoiceUpload] Upload attempt ${attempt} failed:`, error);
-        
-        // If not the last attempt, wait before retrying
-        if (attempt < maxRetries) {
-          const delay = Math.min(1000 * Math.pow(2, attempt - 1), 5000); // Exponential backoff, max 5s
-          console.log(`[BackendVoiceUpload] Retrying in ${delay}ms...`);
-          await new Promise(resolve => setTimeout(resolve, delay));
-        }
+  export const uploadVoiceWithProgress = async (audioUri, onProgress) => {
+    try {
+      // Validate file first
+      const validation = await validateAudioFile(audioUri);
+      if (!validation.valid) {
+        throw new Error(validation.error);
       }
+      
+      if (onProgress) onProgress(0, 'Preparing upload...');
+      
+      const formData = new FormData();
+      formData.append('audio', {
+        uri: audioUri,
+        type: 'audio/m4a',
+        name: `voice_recording_${Date.now()}.m4a`,
+      });
+      
+      if (onProgress) onProgress(25, 'Uploading to server...');
+      
+      const requestOptions = {
+        method: "POST",
+        body: formData,
+      };
+      
+      const response = await fetch('https://backendaimaintenance.deepvox.ai/api/v1/upload-voice', requestOptions);
+      
+      if (onProgress) onProgress(75, 'Processing transcription...');
+      
+      const result = await response.text();
+      
+      if (!response.ok) {
+        throw new Error(`Upload failed: ${response.status} - ${result}`);
+      }
+      
+      let parsedResult;
+      try {
+        parsedResult = JSON.parse(result);
+      } catch (parseError) {
+        parsedResult = { transcription: result.trim() };
+      }
+      
+      const processedResult = processBackendResponse(parsedResult);
+      
+      if (onProgress) onProgress(100, 'Transcription complete!');
+      
+      return {
+        success: true,
+        transcription: processedResult.transcription,
+        audioUrl: processedResult.audioUrl,
+        fileInfo: validation.fileInfo,
+        originalResponse: parsedResult
+      };
+      
+    } catch (error) {
+      if (onProgress) onProgress(0, `Error: ${error.message}`);
+      console.error('[BackendVoiceUpload] Upload with progress error:', error);
+      throw error;
     }
-    
-    // All attempts failed
-    throw new Error(`Voice upload failed after ${maxRetries} attempts. Last error: ${lastError?.message || 'Unknown error'}`);
   };
-  
+
   /**
    * Validate audio file before upload
    */
@@ -233,64 +275,5 @@ export const uploadVoiceForTranscription = async (audioUri) => {
     } catch (error) {
       console.error('[BackendVoiceUpload] File validation error:', error);
       return { valid: false, error: `Validation failed: ${error.message}` };
-    }
-  };
-  
-  /**
-   * Upload with progress callback (if your backend supports it)
-   */
-  export const uploadVoiceWithProgress = async (audioUri, onProgress) => {
-    try {
-      // Validate file first
-      const validation = await validateAudioFile(audioUri);
-      if (!validation.valid) {
-        throw new Error(validation.error);
-      }
-      
-      if (onProgress) onProgress(0, 'Preparing upload...');
-      
-      const formData = new FormData();
-      formData.append('audio', {
-        uri: audioUri,
-        type: 'audio/m4a',
-        name: `voice_recording_${Date.now()}.m4a`,
-      });
-      
-      formData.append('timestamp', new Date().toISOString());
-      formData.append('type', 'voice_transcription');
-      
-      if (onProgress) onProgress(25, 'Uploading to server...');
-      
-      const response = await fetch('https://backendaimaintenance.deepvox.ai/api/v1/upload-voice', {
-        method: 'POST',
-        body: formData,
-        headers: {
-          'Content-Type': 'multipart/form-data',
-        },
-      });
-      
-      if (onProgress) onProgress(75, 'Processing transcription...');
-      
-      if (!response.ok) {
-        const errorText = await response.text();
-        throw new Error(`Upload failed: ${response.status} - ${errorText}`);
-      }
-      
-      const result = await response.json();
-      const processedResult = processBackendResponse(result);
-      
-      if (onProgress) onProgress(100, 'Transcription complete!');
-      
-      return {
-        success: true,
-        transcription: processedResult.transcription,
-        audioUrl: processedResult.audioUrl,
-        fileInfo: validation.fileInfo,
-        originalResponse: result
-      };
-      
-    } catch (error) {
-      if (onProgress) onProgress(0, `Error: ${error.message}`);
-      throw error;
     }
   };
