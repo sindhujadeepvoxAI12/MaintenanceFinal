@@ -30,7 +30,7 @@ import * as Sharing from 'expo-sharing';
 import AudioRecordingService from '../../services/AudioRecordingService';
 import VoiceService from '../../services/voiceService';
 
-const { width } = Dimensions.get('window');
+const { width, height } = Dimensions.get('window');
 
 export default function MaintenanceScreen() {
   const [activeTab, setActiveTab] = useState('overview');
@@ -73,6 +73,7 @@ export default function MaintenanceScreen() {
     note: '', 
     image: '',
     voiceFileUrl: '',
+    voiceUrl: '',
     startTime: ''
   });
   const [imageViewer, setImageViewer] = useState({ visible: false, imageUrl: '' });
@@ -245,7 +246,8 @@ export default function MaintenanceScreen() {
         
         setNoteModal(prev => ({ 
           ...prev, 
-          voiceFileUrl: result.fileUrl
+          voiceFileUrl: result.fileUrl,
+          voiceUrl: result.fileUrl
         }));
         
         await AudioRecordingService.deleteRecording(recordingUri);
@@ -472,79 +474,86 @@ export default function MaintenanceScreen() {
             )}
           </View>
 
-          {/* Completion details */}
+          {/* Completion details - FIXED WITH PROPER CONSTRAINTS */}
           {isCompleted && (
             <View style={styles.completionDetails}>
               <Text style={[styles.completionTitle, { color: colors.glowLight }]}>Completion Details</Text>
               
-              <View style={styles.timestampRow}>
-                <Text style={[styles.timestampLabel, { color: colors.tabIconDefault }]}>Started:</Text>
-                <Text style={[styles.timestampValue, { color: colors.text }]}>
-                  {task.startTime ? new Date(task.startTime).toLocaleString() : 'N/A'}
-                </Text>
-              </View>
-              <View style={styles.timestampRow}>
-                <Text style={[styles.timestampLabel, { color: colors.tabIconDefault }]}>Completed:</Text>
-                <Text style={[styles.timestampValue, { color: colors.text }]}>
-                  {task.endTime ? new Date(task.endTime).toLocaleString() : 'N/A'}
-                </Text>
-              </View>
-              
-              {task.note && (
-                <View style={styles.completionNote}>
-                  <Text style={[styles.completionNoteLabel, { color: colors.tabIconDefault }]}>Notes:</Text>
-                  <Text style={[styles.completionNoteText, { color: colors.text }]}>{task.note}</Text>
+              <ScrollView 
+                style={styles.completionDetailsScrollContainer}
+                contentContainerStyle={styles.completionDetailsContent}
+                showsVerticalScrollIndicator={true}
+                nestedScrollEnabled={true}
+              >
+                <View style={styles.timestampRow}>
+                  <Text style={[styles.timestampLabel, { color: colors.tabIconDefault }]}>Started:</Text>
+                  <Text style={[styles.timestampValue, { color: colors.text }]}>
+                    {task.startTime ? new Date(task.startTime).toLocaleString() : 'N/A'}
+                  </Text>
                 </View>
-              )}
-              
-              {task.voiceFileUrl && (
-                <View style={styles.completionVoice}>
-                  <Text style={[styles.completionVoiceLabel, { color: colors.tabIconDefault }]}>Voice Recording:</Text>
-                  <View style={styles.voiceFileContainer}>
-                    <View style={{ flexDirection: 'row', gap: 8 }}>
-                      <TouchableOpacity 
-                        style={styles.voiceFileButton}
-                        onPress={() => openVoiceUrl(task.voiceFileUrl)}
-                      >
-                        <Text style={[styles.voiceFileButtonText, { color: colors.text }]}>Open</Text>
-                      </TouchableOpacity>
-                      <TouchableOpacity 
-                        style={styles.voiceFileButton}
-                        onPress={() => copyVoiceUrl(task.voiceFileUrl)}
-                      >
-                        <Text style={[styles.voiceFileButtonText, { color: colors.text }]}>Copy URL</Text>
-                      </TouchableOpacity>
-                      <TouchableOpacity 
-                        style={styles.voiceFileButton}
-                        onPress={() => downloadVoiceFile(task.voiceFileUrl)}
-                      >
-                        <Text style={[styles.voiceFileButtonText, { color: colors.text }]}>Download</Text>
-                      </TouchableOpacity>
+                <View style={styles.timestampRow}>
+                  <Text style={[styles.timestampLabel, { color: colors.tabIconDefault }]}>Completed:</Text>
+                  <Text style={[styles.timestampValue, { color: colors.text }]}>
+                    {task.endTime ? new Date(task.endTime).toLocaleString() : 'N/A'}
+                  </Text>
+                </View>
+                
+                {task.note && (
+                  <View style={styles.completionNote}>
+                    <Text style={[styles.completionNoteLabel, { color: colors.tabIconDefault }]}>Notes:</Text>
+                    <Text style={[styles.completionNoteText, { color: colors.text }]}>{task.note}</Text>
+                  </View>
+                )}
+                
+                {(task.voiceUrl || task.voiceFileUrl) && (
+                  <View style={styles.completionVoice}>
+                    <Text style={[styles.completionVoiceLabel, { color: colors.tabIconDefault }]}>Voice Recording:</Text>
+                    <View style={styles.voiceFileContainer}>
+                      <View style={{ flexDirection: 'row', gap: 8, flexWrap: 'wrap' }}>
+                        <TouchableOpacity 
+                          style={styles.voiceFileButton}
+                          onPress={() => openVoiceUrl(task.voiceUrl || task.voiceFileUrl)}
+                        >
+                          <Text style={[styles.voiceFileButtonText, { color: colors.text }]}>Open</Text>
+                        </TouchableOpacity>
+                        <TouchableOpacity 
+                          style={styles.voiceFileButton}
+                          onPress={() => copyVoiceUrl(task.voiceUrl || task.voiceFileUrl)}
+                        >
+                          <Text style={[styles.voiceFileButtonText, { color: colors.text }]}>Copy URL</Text>
+                        </TouchableOpacity>
+                        <TouchableOpacity 
+                          style={styles.voiceFileButton}
+                          onPress={() => downloadVoiceFile(task.voiceUrl || task.voiceFileUrl)}
+                        >
+                          <Text style={[styles.voiceFileButtonText, { color: colors.text }]}>Download</Text>
+                        </TouchableOpacity>
+                      </View>
                     </View>
                   </View>
-                </View>
-              )}
-              
-              {task.image && typeof task.image === 'string' && (task.image.startsWith('http') || task.image.startsWith('file://')) && (
-                <View style={styles.completionImage}>
-                  <Text style={[styles.completionImageLabel, { color: colors.tabIconDefault }]}>Attached Image:</Text>
-                  <TouchableOpacity 
-                    onPress={() => {
-                      setImageViewer({ visible: true, imageUrl: task.image });
-                    }}
-                    style={styles.imageClickableContainer}
-                  >
-                    <Image 
-                      source={{ uri: task.image }} 
-                      style={styles.completionImagePreview}
-                      resizeMode="cover"
-                    />
-                    <View style={styles.imageOverlay}>
-                      <Text style={styles.imageOverlayText}>Tap to view full size</Text>
-                    </View>
-                  </TouchableOpacity>
-                </View>
-              )}
+                )}
+                
+                {task.image && typeof task.image === 'string' && (task.image.startsWith('http') || task.image.startsWith('file://')) && (
+                  <View style={styles.completionImage}>
+                    <Text style={[styles.completionImageLabel, { color: colors.tabIconDefault }]}>Attached Image:</Text>
+                    <TouchableOpacity 
+                      onPress={() => {
+                        setImageViewer({ visible: true, imageUrl: task.image });
+                      }}
+                      style={styles.imageClickableContainer}
+                    >
+                      <Image 
+                        source={{ uri: task.image }} 
+                        style={styles.completionImagePreview}
+                        resizeMode="cover"
+                      />
+                      <View style={styles.imageOverlay}>
+                        <Text style={styles.imageOverlayText}>Tap to view full size</Text>
+                      </View>
+                    </TouchableOpacity>
+                  </View>
+                )}
+              </ScrollView>
             </View>
           )}
           
@@ -580,7 +589,8 @@ export default function MaintenanceScreen() {
                     startTime: task.startTime || '',
                     note: '', 
                     image: '',
-                    voiceFileUrl: ''
+                    voiceFileUrl: '',
+                    voiceUrl: ''
                   });
                 }}
               >
@@ -1441,7 +1451,7 @@ export default function MaintenanceScreen() {
           </View>
         </Modal>
 
-        {/* Task Completion Modal */}
+        {/* Task Completion Modal - FIXED WITH PROPER SCROLLING AND DIMENSIONS */}
         <Modal
           visible={noteModal.visible}
           transparent={true}
@@ -1456,235 +1466,260 @@ export default function MaintenanceScreen() {
               note: '', 
               image: '',
               voiceFileUrl: '',
+              voiceUrl: '',
               startTime: ''
             });
           }}
         >
           <View style={styles.modalOverlay}>
-            <ScrollView 
-              contentContainerStyle={styles.modalScrollContainer}
-              showsVerticalScrollIndicator={false}
-              keyboardShouldPersistTaps="handled"
-            >
-              <View style={[styles.modalContent, { backgroundColor: colors.background }]}>
-                <Text style={[styles.modalTitle, { color: colors.glowLight }]}>
-                  Complete Task
-                </Text>
-                <Text style={[styles.modalSubtitle, { color: colors.tabIconDefault }]}>
-                  Add completion details for this task:
-                </Text>
-                
-                {/* Text Notes Input */}
-                <View style={styles.inputSection}>
-                  <Text style={[styles.sectionLabel, { color: colors.tabIconDefault }]}>Written Notes</Text>
-                  <TextInput
-                    style={[styles.noteInput, { 
-                      backgroundColor: colors.background,
-                      color: colors.text,
-                      borderColor: colors.glowLight 
-                    }]}
-                    placeholder="Enter notes about task completion..."
-                    placeholderTextColor={colors.tabIconDefault}
-                    value={noteModal.note}
-                    onChangeText={(text) => setNoteModal(prev => ({ ...prev, note: text }))}
-                    multiline
-                    numberOfLines={4}
-                    textAlignVertical="top"
-                  />
-                </View>
-
-                {/* Voice Recording Section */}
-                <View style={styles.voiceSection}>
-                  <Text style={[styles.sectionLabel, { color: colors.tabIconDefault }]}>
-                    Voice Recording
+            <View style={styles.fixedModalContainer}>
+              <View style={[styles.fixedModalContent, { backgroundColor: colors.background }]}>
+                <View style={styles.fixedModalHeader}>
+                  <Text style={[styles.modalTitle, { color: colors.glowLight }]}>
+                    Complete Task
                   </Text>
-                  
-                  {!showRecordingActions && (
-                    <TouchableOpacity 
-                      style={[
-                        styles.voiceButton, 
-                        { 
-                          borderColor: isRecording ? '#FF6B6B' : colors.glowLight,
-                          backgroundColor: isRecording ? '#FF6B6B' : isUploading ? '#FFA500' : 'transparent'
-                        }
-                      ]} 
-                      onPress={isRecording ? stopVoiceRecording : startVoiceRecording}
-                      disabled={isUploading}
-                    >
-                      <Text style={[styles.voiceButtonText, { color: isRecording ? '#FFFFFF' : colors.glowLight }]}>
-                        {isRecording ? 'Stop Recording' : 
-                         isUploading ? 'Uploading...' : 
-                         'Record Voice Note'}
-                      </Text>
-                    </TouchableOpacity>
-                  )}
-
-                  {isRecording && (
-                    <View style={styles.recordingIndicator}>
-                      <View style={[styles.recordingDot, { backgroundColor: '#FF6B6B' }]} />
-                      <Text style={[styles.recordingText, { color: colors.text }]}>
-                        Recording: {formatDuration(recordingDuration)}
-                      </Text>
-                      <Text style={[styles.recordingHint, { color: colors.tabIconDefault }]}>
-                        Tap "Stop Recording" when finished
-                      </Text>
-                    </View>
-                  )}
-
-                  {showRecordingActions && !isUploading && (
-                    <View style={styles.recordingActionsContainer}>
-                      <TouchableOpacity 
-                        style={[styles.recordingActionButton, styles.cancelRecordingButton]}
-                        onPress={cancelVoiceRecording}
-                      >
-                        <Text style={styles.cancelRecordingText}>Delete Recording</Text>
-                      </TouchableOpacity>
-                      <TouchableOpacity 
-                        style={[styles.recordingActionButton, styles.uploadRecordingButton]}
-                        onPress={uploadVoiceRecording}
-                      >
-                        <Text style={styles.uploadRecordingText}>Upload Voice File</Text>
-                      </TouchableOpacity>
-                    </View>
-                  )}
-
-                  {(isUploading || uploadStatus) && (
-                    <View style={styles.uploadIndicator}>
-                      <Text style={[styles.uploadText, { color: colors.text }]}>
-                        {uploadStatus}
-                      </Text>
-                    </View>
-                  )}
-
-                  {!isRecording && !isUploading && noteModal.voiceFileUrl && (
-                    <View style={styles.voiceFileDisplayContainer}>
-                      <Text style={[styles.voiceFileLabel, { color: colors.tabIconDefault }]}>
-                        Voice File Uploaded:
-                      </Text>
-                      <View style={styles.voiceFileUrlBox}>
-                        <TouchableOpacity 
-                          onPress={() => {
-                            Alert.alert(
-                              'Voice File URL',
-                              noteModal.voiceFileUrl,
-                              [
-                                {
-                                  text: 'Copy URL',
-                                  onPress: () => {
-                                    console.log('Voice file URL:', noteModal.voiceFileUrl);
-                                  }
-                                },
-                                { text: 'OK' }
-                              ]
-                            );
-                          }}
-                        >
-                          <Text style={[styles.voiceFileUrlText, { color: colors.text }]}>
-                            {noteModal.voiceFileUrl.length > 50 
-                              ? noteModal.voiceFileUrl.substring(0, 50) + '...' 
-                              : noteModal.voiceFileUrl}
-                          </Text>
-                          <Text style={[styles.voiceFileUrlHint, { color: colors.tabIconDefault }]}>
-                            Tap to view full URL
-                          </Text>
-                        </TouchableOpacity>
-                      </View>
-                    </View>
-                  )}
-                </View>
-
-                {/* Image Upload Section */}
-                <View style={styles.imageSection}>
-                  <Text style={[styles.sectionLabel, { color: colors.tabIconDefault }]}>Photo Attachment</Text>
-                  
                   <TouchableOpacity 
-                    style={[
-                      styles.imageButton, 
-                      { 
-                        borderColor: noteModal.image ? colors.buttonPrimary : colors.glowLight,
-                        backgroundColor: noteModal.image ? colors.buttonPrimary : 'rgba(255, 255, 255, 0.1)'
+                    style={styles.closeButton}
+                    onPress={() => {
+                      if (isRecording) {
+                        cancelVoiceRecording();
                       }
-                    ]} 
-                    onPress={async () => {
-                      try {
-                        const perm = await ImagePicker.requestMediaLibraryPermissionsAsync();
-                        if (perm.status !== 'granted') {
-                          Alert.alert('Permission Required', 'Please allow media library access to select an image.');
-                          return;
-                        }
-                        
-                        const result = await ImagePicker.launchImageLibraryAsync({ 
-                          mediaTypes: ImagePicker.MediaTypeOptions.Images, 
-                          quality: 0.8,
-                          allowsEditing: false
-                        });
-                        
-                        if (result.canceled) return;
-                        
-                        const asset = result.assets && result.assets[0];
-                        if (!asset?.uri) return;
-                        
-                        if (asset.fileSize && asset.fileSize > 10 * 1024 * 1024) {
-                          Alert.alert('File Too Large', 'Please select an image smaller than 10MB.');
-                          return;
-                        }
-                        
-                        console.log('[Image] Uploading image to IMAGE API...', asset.uri);
-                        const uploadRes = await uploadImage(asset.uri);
-                        console.log('[Image] Image API response:', uploadRes);
-                        
-                        let imageUrl = null;
-                        if (uploadRes?.file_url) {
-                          imageUrl = uploadRes.file_url;
-                        } else if (uploadRes?.url) {
-                          imageUrl = uploadRes.url;
-                        } else if (uploadRes?.data?.file_url) {
-                          imageUrl = uploadRes.data.file_url;
-                        } else if (uploadRes?.data?.url) {
-                          imageUrl = uploadRes.data.url;
-                        } else if (typeof uploadRes === 'string' && uploadRes.startsWith('http')) {
-                          imageUrl = uploadRes;
-                        }
-                        
-                        if (imageUrl && imageUrl.startsWith('http')) {
-                          setNoteModal(prev => ({ ...prev, image: imageUrl }));
-                          console.log('[Image] Image URL saved:', imageUrl);
-                          Alert.alert('Success', 'Image uploaded successfully!');
-                        } else {
-                          console.log('[Image] Failed to get valid URL from response:', uploadRes);
-                          Alert.alert('Upload Failed', 'Image upload failed. Please try again.');
-                        }
-                      } catch (e) {
-                        console.error('[Image] Upload error:', e);
-                        Alert.alert('Upload Failed', e?.message || 'Could not upload image');
-                      }
+                      setNoteModal({ 
+                        visible: false, 
+                        historyId: null, 
+                        note: '', 
+                        image: '',
+                        voiceFileUrl: '',
+                        voiceUrl: '',
+                        startTime: ''
+                      });
                     }}
                   >
-                    <Text style={[styles.modalButtonText, { color: noteModal.image ? '#FFFFFF' : colors.glowLight }]}>
-                      {noteModal.image ? 'Image Attached' : 'Add Image (10MB max)'}
-                    </Text>
+                    <Text style={[styles.closeButtonText, { color: colors.text }]}>✕</Text>
                   </TouchableOpacity>
-
-                  {noteModal.image && (
-                    <View style={styles.imagePreviewContainer}>
-                      <Text style={[styles.imagePreviewLabel, { color: colors.tabIconDefault }]}>Attached Image:</Text>
-                      <TouchableOpacity
-                        onPress={() => setImageViewer({ visible: true, imageUrl: noteModal.image })}
-                      >
-                        <Image 
-                          source={{ uri: noteModal.image }} 
-                          style={styles.imagePreview}
-                          resizeMode="cover"
-                        />
-                        <View style={styles.imagePreviewOverlay}>
-                          <Text style={styles.imagePreviewOverlayText}>Tap to view</Text>
-                        </View>
-                      </TouchableOpacity>
-                    </View>
-                  )}
                 </View>
+                
+                <ScrollView 
+                  style={styles.fixedModalScrollView}
+                  contentContainerStyle={styles.fixedModalScrollContent}
+                  showsVerticalScrollIndicator={true}
+                  keyboardShouldPersistTaps="handled"
+                >
+                  <Text style={[styles.modalSubtitle, { color: colors.tabIconDefault }]}>
+                    Add completion details for this task:
+                  </Text>
+                  
+                  {/* Text Notes Input */}
+                  <View style={styles.inputSection}>
+                    <Text style={[styles.sectionLabel, { color: colors.tabIconDefault }]}>Written Notes</Text>
+                    <TextInput
+                      style={[styles.fixedNoteInput, { 
+                        backgroundColor: colors.background,
+                        color: colors.text,
+                        borderColor: colors.glowLight 
+                      }]}
+                      placeholder="Enter notes about task completion..."
+                      placeholderTextColor={colors.tabIconDefault}
+                      value={noteModal.note}
+                      onChangeText={(text) => setNoteModal(prev => ({ ...prev, note: text }))}
+                      multiline
+                      textAlignVertical="top"
+                    />
+                  </View>
 
-                <View style={styles.modalButtons}>
+                  {/* Voice Recording Section */}
+                  <View style={styles.inputSection}>
+                    <Text style={[styles.sectionLabel, { color: colors.tabIconDefault }]}>
+                      Voice Recording
+                    </Text>
+                    
+                    {!showRecordingActions && (
+                      <TouchableOpacity 
+                        style={[
+                          styles.voiceButton, 
+                          { 
+                            borderColor: isRecording ? '#FF6B6B' : colors.glowLight,
+                            backgroundColor: isRecording ? '#FF6B6B' : isUploading ? '#FFA500' : 'transparent'
+                          }
+                        ]} 
+                        onPress={isRecording ? stopVoiceRecording : startVoiceRecording}
+                        disabled={isUploading}
+                      >
+                        <Text style={[styles.voiceButtonText, { color: isRecording ? '#FFFFFF' : colors.glowLight }]}>
+                          {isRecording ? 'Stop Recording' : 
+                           isUploading ? 'Uploading...' : 
+                           'Record Voice Note'}
+                        </Text>
+                      </TouchableOpacity>
+                    )}
+
+                    {isRecording && (
+                      <View style={styles.recordingIndicator}>
+                        <View style={[styles.recordingDot, { backgroundColor: '#FF6B6B' }]} />
+                        <Text style={[styles.recordingText, { color: colors.text }]}>
+                          Recording: {formatDuration(recordingDuration)}
+                        </Text>
+                        <Text style={[styles.recordingHint, { color: colors.tabIconDefault }]}>
+                          Tap "Stop Recording" when finished
+                        </Text>
+                      </View>
+                    )}
+
+                    {showRecordingActions && !isUploading && (
+                      <View style={styles.recordingActionsContainer}>
+                        <TouchableOpacity 
+                          style={[styles.recordingActionButton, styles.cancelRecordingButton]}
+                          onPress={cancelVoiceRecording}
+                        >
+                          <Text style={styles.cancelRecordingText}>Delete Recording</Text>
+                        </TouchableOpacity>
+                        <TouchableOpacity 
+                          style={[styles.recordingActionButton, styles.uploadRecordingButton]}
+                          onPress={uploadVoiceRecording}
+                        >
+                          <Text style={styles.uploadRecordingText}>Upload Voice File</Text>
+                        </TouchableOpacity>
+                      </View>
+                    )}
+
+                    {(isUploading || uploadStatus) && (
+                      <View style={styles.uploadIndicator}>
+                        <Text style={[styles.uploadText, { color: colors.text }]}>
+                          {uploadStatus}
+                        </Text>
+                      </View>
+                    )}
+
+                    {!isRecording && !isUploading && noteModal.voiceFileUrl && (
+                      <View style={styles.voiceFileDisplayContainer}>
+                        <Text style={[styles.voiceFileLabel, { color: colors.tabIconDefault }]}>
+                          Voice File Uploaded:
+                        </Text>
+                        <View style={styles.voiceFileUrlBox}>
+                          <TouchableOpacity 
+                            onPress={() => {
+                              Alert.alert(
+                                'Voice File URL',
+                                noteModal.voiceFileUrl,
+                                [
+                                  {
+                                    text: 'Copy URL',
+                                    onPress: () => {
+                                      console.log('Voice file URL:', noteModal.voiceFileUrl);
+                                    }
+                                  },
+                                  { text: 'OK' }
+                                ]
+                              );
+                            }}
+                          >
+                            <Text style={[styles.voiceFileUrlText, { color: colors.text }]}>
+                              {noteModal.voiceFileUrl.length > 50 
+                                ? noteModal.voiceFileUrl.substring(0, 50) + '...' 
+                                : noteModal.voiceFileUrl}
+                            </Text>
+                            <Text style={[styles.voiceFileUrlHint, { color: colors.tabIconDefault }]}>
+                              Tap to view full URL
+                            </Text>
+                          </TouchableOpacity>
+                        </View>
+                      </View>
+                    )}
+                  </View>
+
+                  {/* Image Upload Section */}
+                  <View style={styles.inputSection}>
+                    <Text style={[styles.sectionLabel, { color: colors.tabIconDefault }]}>Photo Attachment</Text>
+                    
+                    <TouchableOpacity 
+                      style={[
+                        styles.imageButton, 
+                        { 
+                          borderColor: noteModal.image ? colors.buttonPrimary : colors.glowLight,
+                          backgroundColor: noteModal.image ? colors.buttonPrimary : 'rgba(255, 255, 255, 0.1)'
+                        }
+                      ]} 
+                      onPress={async () => {
+                        try {
+                          const perm = await ImagePicker.requestMediaLibraryPermissionsAsync();
+                          if (perm.status !== 'granted') {
+                            Alert.alert('Permission Required', 'Please allow media library access to select an image.');
+                            return;
+                          }
+                          
+                          const result = await ImagePicker.launchImageLibraryAsync({ 
+                            mediaTypes: ImagePicker.MediaTypeOptions.Images, 
+                            quality: 0.8,
+                            allowsEditing: false
+                          });
+                          
+                          if (result.canceled) return;
+                          
+                          const asset = result.assets && result.assets[0];
+                          if (!asset?.uri) return;
+                          
+                          if (asset.fileSize && asset.fileSize > 10 * 1024 * 1024) {
+                            Alert.alert('File Too Large', 'Please select an image smaller than 10MB.');
+                            return;
+                          }
+                          
+                          console.log('[Image] Uploading image to IMAGE API...', asset.uri);
+                          const uploadRes = await uploadImage(asset.uri);
+                          console.log('[Image] Image API response:', uploadRes);
+                          
+                          let imageUrl = null;
+                          if (uploadRes?.file_url) {
+                            imageUrl = uploadRes.file_url;
+                          } else if (uploadRes?.url) {
+                            imageUrl = uploadRes.url;
+                          } else if (uploadRes?.data?.file_url) {
+                            imageUrl = uploadRes.data.file_url;
+                          } else if (uploadRes?.data?.url) {
+                            imageUrl = uploadRes.data.url;
+                          } else if (typeof uploadRes === 'string' && uploadRes.startsWith('http')) {
+                            imageUrl = uploadRes;
+                          }
+                          
+                          if (imageUrl && imageUrl.startsWith('http')) {
+                            setNoteModal(prev => ({ ...prev, image: imageUrl }));
+                            console.log('[Image] Image URL saved:', imageUrl);
+                            Alert.alert('Success', 'Image uploaded successfully!');
+                          } else {
+                            console.log('[Image] Failed to get valid URL from response:', uploadRes);
+                            Alert.alert('Upload Failed', 'Image upload failed. Please try again.');
+                          }
+                        } catch (e) {
+                          console.error('[Image] Upload error:', e);
+                          Alert.alert('Upload Failed', e?.message || 'Could not upload image');
+                        }
+                      }}
+                    >
+                      <Text style={[styles.modalButtonText, { color: noteModal.image ? '#FFFFFF' : colors.glowLight }]}>
+                        {noteModal.image ? 'Image Attached' : 'Add Image (10MB max)'}
+                      </Text>
+                    </TouchableOpacity>
+
+                    {noteModal.image && (
+                      <View style={styles.fixedImagePreviewContainer}>
+                        <Text style={[styles.imagePreviewLabel, { color: colors.tabIconDefault }]}>Attached Image:</Text>
+                        <TouchableOpacity
+                          onPress={() => setImageViewer({ visible: true, imageUrl: noteModal.image })}
+                        >
+                          <Image 
+                            source={{ uri: noteModal.image }} 
+                            style={styles.fixedImagePreview}
+                            resizeMode="cover"
+                          />
+                          <View style={styles.imagePreviewOverlay}>
+                            <Text style={styles.imagePreviewOverlayText}>Tap to view</Text>
+                          </View>
+                        </TouchableOpacity>
+                      </View>
+                    )}
+                  </View>
+                </ScrollView>
+
+                <View style={styles.fixedModalFooter}>
                   <TouchableOpacity
                     style={[styles.modalButton, styles.cancelButton]}
                     onPress={() => {
@@ -1697,6 +1732,7 @@ export default function MaintenanceScreen() {
                         note: '', 
                         image: '',
                         voiceFileUrl: '',
+                        voiceUrl: '',
                         startTime: ''
                       });
                     }}
@@ -1718,7 +1754,9 @@ export default function MaintenanceScreen() {
                           startTime: noteModal.startTime,
                           endTime: endTime,
                           note: finalNote,
-                          voiceFileUrl: noteModal.voiceFileUrl || '',
+                          // keep both for backward and server field compatibility
+                          voiceFileUrl: noteModal.voiceFileUrl || noteModal.voiceUrl || '',
+                          voiceUrl: noteModal.voiceUrl || noteModal.voiceFileUrl || '',
                           image: noteModal.image || ''
                         };
                         
@@ -1733,6 +1771,7 @@ export default function MaintenanceScreen() {
                           note: '', 
                           image: '',
                           voiceFileUrl: '',
+                          voiceUrl: '',
                           startTime: ''
                         });
                         
@@ -1749,7 +1788,7 @@ export default function MaintenanceScreen() {
                   </TouchableOpacity>
                 </View>
               </View>
-            </ScrollView>
+            </View>
           </View>
         </Modal>
 
@@ -2004,12 +2043,6 @@ const styles = StyleSheet.create({
     alignItems: 'center',
     backgroundColor: 'rgba(0, 0, 0, 0.5)',
   },
-  modalScrollContainer: {
-    flexGrow: 1,
-    justifyContent: 'center',
-    alignItems: 'center',
-    paddingVertical: 20,
-  },
   modalContent: {
     backgroundColor: 'rgba(255, 255, 255, 0.95)',
     borderRadius: 15,
@@ -2035,14 +2068,6 @@ const styles = StyleSheet.create({
     marginBottom: 20,
   },
   inputSection: {
-    width: '100%',
-    marginBottom: 20,
-  },
-  voiceSection: {
-    width: '100%',
-    marginBottom: 20,
-  },
-  imageSection: {
     width: '100%',
     marginBottom: 20,
   },
@@ -2176,39 +2201,6 @@ const styles = StyleSheet.create({
     alignItems: 'center',
     marginBottom: 15,
   },
-  imagePreviewContainer: {
-    marginTop: 15,
-    padding: 0,
-    borderRadius: 0,
-    borderWidth: 0,
-  },
-  imagePreviewLabel: {
-    fontSize: 12,
-    fontWeight: '500',
-    marginBottom: 8,
-  },
-  imagePreview: {
-    width: '100%',
-    height: 100,
-    borderRadius: 6,
-  },
-  imagePreviewOverlay: {
-    position: 'absolute',
-    bottom: 0,
-    left: 0,
-    right: 0,
-    backgroundColor: 'rgba(0,0,0,0.7)',
-    paddingVertical: 4,
-    paddingHorizontal: 8,
-    borderBottomLeftRadius: 6,
-    borderBottomRightRadius: 6,
-  },
-  imagePreviewOverlayText: {
-    color: '#FFFFFF',
-    fontSize: 12,
-    fontWeight: '600',
-    textAlign: 'center',
-  },
   modalButtons: {
     flexDirection: 'row',
     justifyContent: 'space-around',
@@ -2246,31 +2238,46 @@ const styles = StyleSheet.create({
     fontSize: 14,
     fontWeight: '600',
   },
+  
+  // FIXED STYLES FOR COMPLETION DETAILS SECTION
   completionDetails: {
     marginTop: 15,
     padding: 12,
     borderRadius: 8,
     borderWidth: 1,
     borderColor: '#E5E7EB',
+    height: 200, // Fixed height
+    backgroundColor: 'rgba(255, 255, 255, 0.05)',
   },
   completionTitle: {
     fontSize: 16,
     fontWeight: 'bold',
     marginBottom: 10,
   },
+  completionDetailsScrollContainer: {
+    flex: 1,
+    maxHeight: 160, // Fixed max height for scroll area
+  },
+  completionDetailsContent: {
+    paddingBottom: 10,
+  },
   timestampRow: {
     flexDirection: 'row',
     justifyContent: 'space-between',
     alignItems: 'center',
     marginBottom: 5,
+    paddingVertical: 2,
   },
   timestampLabel: {
     fontSize: 12,
     fontWeight: '500',
+    flex: 1,
   },
   timestampValue: {
     fontSize: 12,
     fontWeight: '600',
+    flex: 2,
+    textAlign: 'right',
   },
   completionNote: {
     marginTop: 10,
@@ -2284,8 +2291,8 @@ const styles = StyleSheet.create({
     marginBottom: 5,
   },
   completionNoteText: {
-    fontSize: 14,
-    lineHeight: 20,
+    fontSize: 12,
+    lineHeight: 16,
     fontStyle: 'italic',
   },
   completionVoice: {
@@ -2300,22 +2307,23 @@ const styles = StyleSheet.create({
     marginBottom: 5,
   },
   voiceFileContainer: {
-    padding: 10,
+    padding: 8,
     backgroundColor: 'rgba(0, 123, 255, 0.1)',
-    borderRadius: 8,
+    borderRadius: 6,
     borderWidth: 1,
     borderColor: 'rgba(0, 123, 255, 0.2)',
   },
   voiceFileButton: {
-    padding: 8,
+    padding: 6,
     backgroundColor: 'rgba(0, 123, 255, 0.05)',
-    borderRadius: 6,
+    borderRadius: 4,
     borderWidth: 1,
     borderColor: 'rgba(0, 123, 255, 0.3)',
+    minWidth: 60,
   },
   voiceFileButtonText: {
-    fontSize: 14,
-    lineHeight: 20,
+    fontSize: 12,
+    lineHeight: 16,
     textAlign: 'center',
     fontWeight: '500',
   },
@@ -2332,8 +2340,8 @@ const styles = StyleSheet.create({
   },
   completionImagePreview: {
     width: '100%',
-    height: 120,
-    borderRadius: 8,
+    height: 80, // Reduced height
+    borderRadius: 6,
   },
   imageClickableContainer: {
     position: 'relative',
@@ -2344,17 +2352,108 @@ const styles = StyleSheet.create({
     left: 0,
     right: 0,
     backgroundColor: 'rgba(0,0,0,0.7)',
+    paddingVertical: 2,
+    paddingHorizontal: 6,
+    borderBottomLeftRadius: 6,
+    borderBottomRightRadius: 6,
+  },
+  imageOverlayText: {
+    color: '#FFFFFF',
+    fontSize: 10,
+    fontWeight: '600',
+    textAlign: 'center',
+  },
+
+  // FIXED MODAL STYLES FOR TASK COMPLETION
+  fixedModalContainer: {
+    width: width * 0.95,
+    height: height * 0.9, // Fixed height
+    backgroundColor: 'transparent',
+  },
+  fixedModalContent: {
+    flex: 1,
+    borderRadius: 15,
+    shadowColor: '#000',
+    shadowOffset: { width: 0, height: 2 },
+    shadowOpacity: 0.25,
+    shadowRadius: 4,
+    elevation: 5,
+  },
+  fixedModalHeader: {
+    flexDirection: 'row',
+    justifyContent: 'space-between',
+    alignItems: 'center',
+    padding: 20,
+    borderBottomWidth: 1,
+    borderBottomColor: '#E5E7EB',
+  },
+  closeButton: {
+    width: 35,
+    height: 35,
+    borderRadius: 17.5,
+    backgroundColor: 'rgba(0,0,0,0.1)',
+    justifyContent: 'center',
+    alignItems: 'center',
+  },
+  closeButtonText: {
+    fontSize: 18,
+    fontWeight: 'bold',
+  },
+  fixedModalScrollView: {
+    flex: 1,
+    paddingHorizontal: 20,
+  },
+  fixedModalScrollContent: {
+    paddingBottom: 20,
+  },
+  fixedModalFooter: {
+    flexDirection: 'row',
+    justifyContent: 'space-around',
+    padding: 20,
+    borderTopWidth: 1,
+    borderTopColor: '#E5E7EB',
+  },
+  fixedNoteInput: {
+    width: '100%',
+    borderWidth: 1,
+    borderRadius: 10,
+    padding: 15,
+    fontSize: 16,
+    height: 120, // Fixed height
+    textAlignVertical: 'top',
+  },
+  fixedImagePreviewContainer: {
+    marginTop: 10,
+  },
+  imagePreviewLabel: {
+    fontSize: 12,
+    fontWeight: '500',
+    marginBottom: 8,
+  },
+  fixedImagePreview: {
+    width: '100%',
+    height: 120, // Fixed height
+    borderRadius: 8,
+  },
+  imagePreviewOverlay: {
+    position: 'absolute',
+    bottom: 0,
+    left: 0,
+    right: 0,
+    backgroundColor: 'rgba(0,0,0,0.7)',
     paddingVertical: 4,
     paddingHorizontal: 8,
     borderBottomLeftRadius: 8,
     borderBottomRightRadius: 8,
   },
-  imageOverlayText: {
+  imagePreviewOverlayText: {
     color: '#FFFFFF',
     fontSize: 12,
     fontWeight: '600',
     textAlign: 'center',
   },
+
+  // IMAGE VIEWER MODAL STYLES
   imageViewerOverlay: {
     position: 'absolute',
     top: 0,

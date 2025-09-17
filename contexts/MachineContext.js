@@ -1,6 +1,6 @@
 import React, { createContext, useContext, useState, useEffect } from 'react';
 import AsyncStorage from '@react-native-async-storage/async-storage';
-import { machineData, maintenanceTypes } from '../app/utils/machineData';
+// Removed static machineData fallback; rely on AsyncStorage/API only
 
 const MachineContext = createContext(undefined);
 
@@ -30,22 +30,6 @@ export const MachineProvider = ({ children }) => {
       
       if (storedMachines) {
         setUserMachines(JSON.parse(storedMachines));
-      } else {
-        // Load default machine data if no stored machines
-        const defaultMachines = machineData.map(machine => ({
-          ...machine,
-          id: machine.id.toString(),
-          machineName: machine.name,
-          machineBrand: machine.brand,
-          machineModel: machine.model,
-          purchaseDate: new Date().toISOString(),
-          lastMaintenanceDate: null,
-          maintenanceNotes: [],
-          addedDate: new Date().toISOString(),
-          status: 'active'
-        }));
-        setUserMachines(defaultMachines);
-        await saveMachineData(defaultMachines, []);
       }
       if (storedRecords) {
         setMaintenanceRecords(JSON.parse(storedRecords));
