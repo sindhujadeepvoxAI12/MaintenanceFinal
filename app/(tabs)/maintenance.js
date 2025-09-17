@@ -13,6 +13,7 @@ import {
   TextInput,
   TouchableOpacity,
   View,
+  Linking,
 } from 'react-native';
 import { Colors } from '../../constants/Colors';
 import { useMachine } from '../../contexts/MachineContext';
@@ -22,6 +23,8 @@ import { getMachinesByUser } from '../../services/machineService';
 import { getTasksByWorker, updateTaskHistory } from '../../services/taskService';
 import { uploadImage } from '../../services/uploadService';
 import * as FileSystem from 'expo-file-system';
+import * as Clipboard from 'expo-clipboard';
+import * as Sharing from 'expo-sharing';
 
 // Voice services
 import AudioRecordingService from '../../services/AudioRecordingService';
@@ -313,6 +316,64 @@ export default function MaintenanceScreen() {
     return `${mins}:${secs.toString().padStart(2, '0')}`;
   };
 
+  const openVoiceUrl = async (url) => {
+    try {
+      if (!url) return;
+      const supported = await Linking.canOpenURL(url);
+      if (supported) {
+        await Linking.openURL(url);
+      } else {
+        Alert.alert('Cannot Open URL', 'Your device cannot open this link. The URL has been copied to the clipboard.');
+        await Clipboard.setStringAsync(url);
+      }
+    } catch (e) {
+      Alert.alert('Error', e?.message || 'Failed to open URL');
+    }
+  };
+
+  const copyVoiceUrl = async (url) => {
+    try {
+      if (!url) return;
+      await Clipboard.setStringAsync(url);
+      Alert.alert('Copied', 'Voice file URL copied to clipboard');
+    } catch (e) {
+      Alert.alert('Copy Failed', e?.message || 'Could not copy URL');
+    }
+  };
+
+  const downloadVoiceFile = async (url) => {
+    try {
+      if (!url || !url.startsWith('http')) {
+        Alert.alert('Invalid URL', 'Cannot download this file');
+        return;
+      }
+      const fileNameFromUrl = () => {
+        try {
+          const fromPath = url.split('?')[0].split('#')[0];
+          const last = fromPath.substring(fromPath.lastIndexOf('/') + 1) || 'recording.m4a';
+          if (last.includes('.')) return last;
+          return last + '.m4a';
+        } catch (_e) {
+          return `recording-${Date.now()}.m4a`;
+        }
+      };
+      const localUri = (FileSystem.documentDirectory || '') + fileNameFromUrl();
+      const res = await FileSystem.downloadAsync(url, localUri);
+      if (res?.status !== 200) {
+        Alert.alert('Download Failed', `Status ${res?.status || 'unknown'}`);
+        return;
+      }
+      const canShare = await Sharing.isAvailableAsync();
+      if (canShare) {
+        await Sharing.shareAsync(res.uri, { mimeType: 'audio/m4a', dialogTitle: 'Share voice recording' });
+      } else {
+        Alert.alert('Downloaded', `Saved to: ${res.uri}`);
+      }
+    } catch (e) {
+      Alert.alert('Download Error', e?.message || 'Failed to download file');
+    }
+  };
+
   // Task helpers
   const toDate = (value) => {
     if (!value) return null;
@@ -440,28 +501,26 @@ export default function MaintenanceScreen() {
                 <View style={styles.completionVoice}>
                   <Text style={[styles.completionVoiceLabel, { color: colors.tabIconDefault }]}>Voice Recording:</Text>
                   <View style={styles.voiceFileContainer}>
-                    <TouchableOpacity 
-                      style={styles.voiceFileButton}
-                      onPress={() => {
-                        Alert.alert(
-                          'Voice Recording',
-                          'Voice file URL:\n\n' + task.voiceFileUrl,
-                          [
-                            {
-                              text: 'Copy URL',
-                              onPress: () => {
-                                console.log('Voice file URL:', task.voiceFileUrl);
-                              }
-                            },
-                            { text: 'OK' }
-                          ]
-                        );
-                      }}
-                    >
-                      <Text style={[styles.voiceFileButtonText, { color: colors.text }]}>
-                        Voice File Available - Tap to view URL
-                      </Text>
-                    </TouchableOpacity>
+                    <View style={{ flexDirection: 'row', gap: 8 }}>
+                      <TouchableOpacity 
+                        style={styles.voiceFileButton}
+                        onPress={() => openVoiceUrl(task.voiceFileUrl)}
+                      >
+                        <Text style={[styles.voiceFileButtonText, { color: colors.text }]}>Open</Text>
+                      </TouchableOpacity>
+                      <TouchableOpacity 
+                        style={styles.voiceFileButton}
+                        onPress={() => copyVoiceUrl(task.voiceFileUrl)}
+                      >
+                        <Text style={[styles.voiceFileButtonText, { color: colors.text }]}>Copy URL</Text>
+                      </TouchableOpacity>
+                      <TouchableOpacity 
+                        style={styles.voiceFileButton}
+                        onPress={() => downloadVoiceFile(task.voiceFileUrl)}
+                      >
+                        <Text style={[styles.voiceFileButtonText, { color: colors.text }]}>Download</Text>
+                      </TouchableOpacity>
+                    </View>
                   </View>
                 </View>
               )}
