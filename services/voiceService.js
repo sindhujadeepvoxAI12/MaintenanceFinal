@@ -1,18 +1,19 @@
-// services/voiceService.js - Enhanced wrapper service with comprehensive error handling
+// services/voiceService.js - FIXED for upload-only functionality
 import AudioRecordingService from './AudioRecordingService';
-import { uploadVoiceForTranscription, uploadVoiceWithProgress, testVoiceAPI } from './BackendVoiceUploadService';
+import { uploadVoiceFile, uploadVoiceFileSimple, testVoiceAPI } from './VoiceUploadService';
 
 class VoiceService {
   constructor() {
     this.isRecording = false;
-    this.isTranscribing = false;
+    this.isUploading = false;
     this.recordingUri = null;
     this.recordingDuration = 0;
     this.onDurationUpdateCallback = null;
-    this.onTranscriptCallback = null;
+    this.onUploadCompleteCallback = null;
     this.onErrorCallback = null;
     this.voiceApiStatus = 'unknown'; // 'working', 'failed', 'unknown'
     this.isInitialized = false;
+    this.lastUploadResult = null;
   }
 
   // Initialize the voice service
@@ -41,19 +42,16 @@ class VoiceService {
     }
   }
 
-  // Test voice API connection with enhanced error handling
+  // Check API status
   async checkVoiceAPI() {
     try {
       console.log('[VoiceService] Checking voice API status...');
-      const isWorking = await testVoiceAPI();
-      this.voiceApiStatus = isWorking ? 'working' : 'failed';
-      console.log('[VoiceService] API status:', this.voiceApiStatus);
       
-      if (!isWorking) {
-        console.warn('[VoiceService] Voice API is not responding correctly');
-      }
+      const result = await testVoiceAPI();
+      this.voiceApiStatus = result.success ? 'working' : 'failed';
       
-      return isWorking;
+      console.log('[VoiceService] API status:', this.voiceApiStatus, result.message);
+      return result.success;
     } catch (error) {
       this.voiceApiStatus = 'failed';
       console.error('[VoiceService] API test error:', error);
@@ -83,7 +81,8 @@ class VoiceService {
       // Reset states
       this.recordingUri = null;
       this.recordingDuration = 0;
-      this.isTranscribing = false;
+      this.isUploading = false;
+      this.lastUploadResult = null;
       
       // Check audio system status
       const audioStatus = await AudioRecordingService.getAudioStatus();
@@ -197,10 +196,10 @@ class VoiceService {
     }
   }
 
-  // Upload and transcribe with enhanced error handling and retries
-  async uploadAndTranscribe(audioUri = null, onProgress = null, maxRetries = 2) {
+  // Upload voice file using correct function
+  async uploadVoiceFile(audioUri = null, onProgress = null, maxRetries = 2) {
     try {
-      console.log('[VoiceService] Starting upload and transcription...');
+      console.log('[VoiceService] Starting voice file upload...');
       
       const uriToUse = audioUri || this.recordingUri;
       
@@ -223,7 +222,7 @@ class VoiceService {
         throw new Error(validation.error);
       }
       
-      this.isTranscribing = true;
+      this.isUploading = true;
       
       let lastError;
       for (let attempt = 1; attempt <= maxRetries; attempt++) {
@@ -234,18 +233,23 @@ class VoiceService {
             onProgress(0, `Uploading... (Attempt ${attempt}/${maxRetries})`);
           }
           
-          // Upload with progress tracking
-          const result = await uploadVoiceWithProgress(uriToUse, onProgress);
+          // Use the correct upload function
+          const result = onProgress 
+            ? await uploadVoiceFile(uriToUse, onProgress)
+            : await uploadVoiceFileSimple(uriToUse);
           
-          this.isTranscribing = false;
+          this.isUploading = false;
           
-          if (result.success && result.transcription) {
-            const transcribedText = result.transcription.trim();
-            console.log('[VoiceService] Transcription successful:', transcribedText);
+          if (result.success && result.fileUrl) {
+            console.log('[VoiceService] Upload successful');
+            console.log('[VoiceService] File URL:', result.fileUrl);
             
-            // Call transcript callback if provided
-            if (this.onTranscriptCallback) {
-              this.onTranscriptCallback(transcribedText, true);
+            // Store the result
+            this.lastUploadResult = result;
+            
+            // Call upload complete callback if provided
+            if (this.onUploadCompleteCallback) {
+              this.onUploadCompleteCallback(result, true);
             }
             
             // Clean up recording file
@@ -256,12 +260,11 @@ class VoiceService {
             
             return {
               success: true,
-              transcription: transcribedText,
-              audioUrl: result.audioUrl,
+              fileUrl: result.fileUrl,
               fileInfo: result.fileInfo
             };
           } else {
-            lastError = new Error('Transcription failed - no valid response from server');
+            lastError = new Error(result.error || 'Upload failed - no valid response from server');
           }
         } catch (attemptError) {
           console.error(`[VoiceService] Upload attempt ${attempt} failed:`, attemptError);
@@ -278,7 +281,7 @@ class VoiceService {
       }
       
       // All attempts failed
-      this.isTranscribing = false;
+      this.isUploading = false;
       console.log('[VoiceService] All upload attempts failed:', lastError);
       if (this.onErrorCallback) {
         this.onErrorCallback(lastError.message);
@@ -286,8 +289,8 @@ class VoiceService {
       return { success: false, error: lastError.message };
       
     } catch (error) {
-      console.error('[VoiceService] Upload/transcription error:', error);
-      this.isTranscribing = false;
+      console.error('[VoiceService] Upload error:', error);
+      this.isUploading = false;
       if (this.onErrorCallback) {
         this.onErrorCallback(error.message);
       }
@@ -295,10 +298,10 @@ class VoiceService {
     }
   }
 
-  // Upload without progress tracking (simpler version with retries)
-  async uploadAndTranscribeSimple(audioUri = null, maxRetries = 2) {
+  // Upload without progress using correct function
+  async uploadVoiceFileSimple(audioUri = null, maxRetries = 2) {
     try {
-      console.log('[VoiceService] Starting simple upload and transcription...');
+      console.log('[VoiceService] Starting simple voice file upload...');
       
       const uriToUse = audioUri || this.recordingUri;
       
@@ -314,25 +317,28 @@ class VoiceService {
         }
       }
       
-      this.isTranscribing = true;
+      this.isUploading = true;
       
       let lastError;
       for (let attempt = 1; attempt <= maxRetries; attempt++) {
         try {
           console.log(`[VoiceService] Simple upload attempt ${attempt}/${maxRetries}`);
           
-          // Upload without progress tracking
-          const result = await uploadVoiceForTranscription(uriToUse);
+          // Use the correct upload function
+          const result = await uploadVoiceFileSimple(uriToUse);
           
-          this.isTranscribing = false;
+          this.isUploading = false;
           
-          if (result.success && result.transcription) {
-            const transcribedText = result.transcription.trim();
-            console.log('[VoiceService] Transcription successful:', transcribedText);
+          if (result.success && result.fileUrl) {
+            console.log('[VoiceService] Simple upload successful');
+            console.log('[VoiceService] File URL:', result.fileUrl);
             
-            // Call transcript callback if provided
-            if (this.onTranscriptCallback) {
-              this.onTranscriptCallback(transcribedText, true);
+            // Store the result
+            this.lastUploadResult = result;
+            
+            // Call upload complete callback if provided
+            if (this.onUploadCompleteCallback) {
+              this.onUploadCompleteCallback(result, true);
             }
             
             // Clean up recording file
@@ -343,11 +349,11 @@ class VoiceService {
             
             return {
               success: true,
-              transcription: transcribedText,
-              audioUrl: result.audioUrl
+              fileUrl: result.fileUrl,
+              fileInfo: result.fileInfo
             };
           } else {
-            lastError = new Error('Transcription failed');
+            lastError = new Error(result.error || 'Upload failed');
           }
         } catch (attemptError) {
           console.error(`[VoiceService] Simple upload attempt ${attempt} failed:`, attemptError);
@@ -361,7 +367,7 @@ class VoiceService {
       }
       
       // All attempts failed
-      this.isTranscribing = false;
+      this.isUploading = false;
       console.log('[VoiceService] All simple upload attempts failed:', lastError);
       if (this.onErrorCallback) {
         this.onErrorCallback(lastError.message);
@@ -369,8 +375,8 @@ class VoiceService {
       return { success: false, error: lastError.message };
       
     } catch (error) {
-      console.error('[VoiceService] Simple upload/transcription error:', error);
-      this.isTranscribing = false;
+      console.error('[VoiceService] Simple upload error:', error);
+      this.isUploading = false;
       if (this.onErrorCallback) {
         this.onErrorCallback(error.message);
       }
@@ -383,11 +389,12 @@ class VoiceService {
     return {
       isInitialized: this.isInitialized,
       isRecording: this.isRecording,
-      isTranscribing: this.isTranscribing,
+      isUploading: this.isUploading,
       recordingDuration: this.recordingDuration,
       hasRecording: !!this.recordingUri,
       voiceApiStatus: this.voiceApiStatus,
-      recordingUri: this.recordingUri
+      recordingUri: this.recordingUri,
+      lastUploadResult: this.lastUploadResult
     };
   }
 
@@ -401,9 +408,9 @@ class VoiceService {
     return this.isRecording;
   }
 
-  // Check if currently transcribing
-  isCurrentlyTranscribing() {
-    return this.isTranscribing;
+  // Check if currently uploading
+  isCurrentlyUploading() {
+    return this.isUploading;
   }
 
   // Check if has a recorded file ready for upload
@@ -416,9 +423,14 @@ class VoiceService {
     return this.recordingUri;
   }
 
-  // Set transcript callback
-  setTranscriptCallback(callback) {
-    this.onTranscriptCallback = callback;
+  // Get last upload result
+  getLastUploadResult() {
+    return this.lastUploadResult;
+  }
+
+  // Set upload complete callback
+  setUploadCompleteCallback(callback) {
+    this.onUploadCompleteCallback = callback;
   }
 
   // Set error callback
@@ -434,9 +446,9 @@ class VoiceService {
     return `${mins}:${secs.toString().padStart(2, '0')}`;
   }
 
-  // Complete workflow: record → stop → upload → transcribe
-  async startRecordingWorkflow(onDurationUpdate = null, onTranscript = null, onError = null) {
-    this.onTranscriptCallback = onTranscript;
+  // Complete workflow: record → stop → upload
+  async startRecordingWorkflow(onDurationUpdate = null, onUploadComplete = null, onError = null) {
+    this.onUploadCompleteCallback = onUploadComplete;
     this.onErrorCallback = onError;
     
     return await this.startRecording(onDurationUpdate, onError);
@@ -446,12 +458,12 @@ class VoiceService {
     return await this.stopRecording();
   }
 
-  async completeWorkflow(onProgress = null) {
+  async completeUploadWorkflow(onProgress = null) {
     if (!this.recordingUri) {
       return { success: false, error: 'No recording available' };
     }
     
-    return await this.uploadAndTranscribe(this.recordingUri, onProgress);
+    return await this.uploadVoiceFile(this.recordingUri, onProgress);
   }
 
   // Enhanced cleanup with comprehensive state reset
@@ -471,21 +483,23 @@ class VoiceService {
       
       // Reset all states
       this.isRecording = false;
-      this.isTranscribing = false;
+      this.isUploading = false;
       this.recordingUri = null;
       this.recordingDuration = 0;
       this.onDurationUpdateCallback = null;
-      this.onTranscriptCallback = null;
+      this.onUploadCompleteCallback = null;
       this.onErrorCallback = null;
+      this.lastUploadResult = null;
       
       console.log('[VoiceService] Cleanup completed');
     } catch (error) {
       console.error('[VoiceService] Error during cleanup:', error);
       // Force reset states even if cleanup fails
       this.isRecording = false;
-      this.isTranscribing = false;
+      this.isUploading = false;
       this.recordingUri = null;
       this.recordingDuration = 0;
+      this.lastUploadResult = null;
     }
   }
 
@@ -505,8 +519,9 @@ class VoiceService {
         service: {
           isInitialized: this.isInitialized,
           isRecording: this.isRecording,
-          isTranscribing: this.isTranscribing,
-          hasRecording: this.hasRecordedAudio()
+          isUploading: this.isUploading,
+          hasRecording: this.hasRecordedAudio(),
+          lastUploadResult: this.lastUploadResult
         }
       };
     } catch (error) {
@@ -515,6 +530,33 @@ class VoiceService {
         overall: 'error',
         error: error.message
       };
+    }
+  }
+
+  // Reset the service for troubleshooting
+  async resetService() {
+    try {
+      console.log('[VoiceService] Resetting voice service...');
+      
+      // Cancel any active operations
+      if (this.isRecording) {
+        await this.cancelRecording();
+      }
+      
+      // Reset audio system
+      await AudioRecordingService.resetAudioSystem();
+      
+      // Reset service state
+      this.isInitialized = false;
+      this.voiceApiStatus = 'unknown';
+      await this.cleanup();
+      
+      console.log('[VoiceService] Service reset complete');
+      return { success: true };
+      
+    } catch (error) {
+      console.error('[VoiceService] Service reset failed:', error);
+      return { success: false, error: error.message };
     }
   }
 }

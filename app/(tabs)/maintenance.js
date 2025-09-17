@@ -21,10 +21,11 @@ import { useAuth } from '../../contexts/AuthContext';
 import { getMachinesByUser } from '../../services/machineService';
 import { getTasksByWorker, updateTaskHistory } from '../../services/taskService';
 import { uploadImage } from '../../services/uploadService';
+import * as FileSystem from 'expo-file-system';
 
-// Import FIXED voice services
+// Voice services
 import AudioRecordingService from '../../services/AudioRecordingService';
-import { uploadVoiceForTranscription, uploadVoiceWithProgress, testVoiceAPI } from '../../services/BackendVoiceUploadService';
+import VoiceService from '../../services/voiceService';
 
 const { width } = Dimensions.get('window');
 
@@ -55,7 +56,7 @@ export default function MaintenanceScreen() {
   
   const machineContext = useMachine();
   const { user } = useAuth();
-  const colorScheme = 'light'; // Force light theme
+  const colorScheme = 'light';
   const colors = Colors[colorScheme];
 
   // API-backed machines
@@ -67,21 +68,19 @@ export default function MaintenanceScreen() {
     visible: false, 
     historyId: null, 
     note: '', 
-    voiceText: '', 
     image: '',
-    recordedAudioUri: '',
+    voiceFileUrl: '',
     startTime: ''
   });
   const [imageViewer, setImageViewer] = useState({ visible: false, imageUrl: '' });
   
-  // COMPLETE Voice recording state management
+  // Voice recording state management
   const [isRecording, setIsRecording] = useState(false);
   const [recordingDuration, setRecordingDuration] = useState(0);
-  const [isTranscribing, setIsTranscribing] = useState(false);
-  const [transcriptionProgress, setTranscriptionProgress] = useState('');
+  const [isUploading, setIsUploading] = useState(false);
+  const [uploadStatus, setUploadStatus] = useState('');
   const [recordingUri, setRecordingUri] = useState('');
   const [showRecordingActions, setShowRecordingActions] = useState(false);
-  const [voiceApiStatus, setVoiceApiStatus] = useState('unknown'); // 'working', 'failed', 'unknown'
 
   const fetchMachines = async () => {
     if (!user?.id) return;
@@ -104,59 +103,58 @@ export default function MaintenanceScreen() {
     }
   };
 
-  // Test voice API on component mount
-  useEffect(() => {
-    const checkVoiceAPI = async () => {
-      try {
-        const isWorking = await testVoiceAPI();
-        setVoiceApiStatus(isWorking ? 'working' : 'failed');
-        console.log('[Voice] API status:', isWorking ? 'working' : 'failed');
-      } catch (error) {
-        setVoiceApiStatus('failed');
-        console.error('[Voice] API test error:', error);
+  // Voice upload function - FIXED to use proper VoiceService
+  const uploadVoiceToAPI = async (audioUri, onProgress) => {
+    try {
+      console.log('=== VOICE UPLOAD USING VOICE SERVICE ===');
+      console.log('[VoiceAPI] Audio URI:', audioUri);
+      
+      if (!audioUri) {
+        throw new Error('No audio file provided');
       }
-    };
-    
-    checkVoiceAPI();
-  }, []);
 
-  // ===== COMPLETE VOICE RECORDING SYSTEM =====
+      console.log('[VoiceAPI] Using VoiceService for upload...');
+      
+      // Use the proper VoiceService for upload
+      const result = await VoiceService.uploadVoiceFile(audioUri, onProgress);
+      
+      console.log('[VoiceAPI] VoiceService upload result:', result);
+      
+      if (result.success && result.fileUrl) {
+        return {
+          success: true,
+          fileUrl: result.fileUrl,
+          fileInfo: result.fileInfo
+        };
+      } else {
+        throw new Error(result.error || 'Voice upload failed');
+      }
 
+    } catch (error) {
+      console.error('[VoiceAPI] Upload error:', error);
+      if (onProgress) onProgress(0, `Error: ${error.message}`);
+      throw new Error(`Voice upload failed: ${error.message}`);
+    }
+  };
+
+  // Voice recording functions
   const startVoiceRecording = async () => {
     try {
       console.log('=== STARTING VOICE RECORDING ===');
       
-      // Check API status first
-      if (voiceApiStatus === 'failed') {
-        Alert.alert(
-          'Voice API Unavailable',
-          'The voice transcription service is currently unavailable. Please try again later or contact support.',
-          [{ text: 'OK' }]
-        );
-        return;
-      }
+      resetVoiceStates();
       
-      // Reset all voice states
-      setRecordingDuration(0);
-      setIsTranscribing(false);
-      setTranscriptionProgress('');
-      setRecordingUri('');
-      setShowRecordingActions(false);
-      
-      // Start recording with REAL-TIME duration callback
       const result = await AudioRecordingService.startRecording((duration) => {
-        console.log('[Voice] Real-time duration update:', duration);
+        console.log('[Voice] Duration update:', duration);
         setRecordingDuration(duration);
       });
       
       if (result.success) {
         setIsRecording(true);
+        setUploadStatus('Recording in progress...');
         console.log('[Voice] Recording started successfully');
-        
-        // Show recording status to user
-        setTranscriptionProgress('Recording in progress...');
       } else {
-        console.log('[Voice] Failed to start recording:', result.error);
+        console.error('[Voice] Failed to start recording:', result.error);
         Alert.alert('Recording Error', result.error || 'Failed to start recording');
       }
     } catch (error) {
@@ -171,25 +169,19 @@ export default function MaintenanceScreen() {
       
       const result = await AudioRecordingService.stopRecording();
       setIsRecording(false);
-      setTranscriptionProgress('');
+      setUploadStatus('');
       
       if (result.success && result.uri) {
         console.log('[Voice] Recording stopped successfully');
-        console.log('[Voice] Final duration:', result.duration, 'seconds');
+        console.log('[Voice] Duration:', result.duration, 'seconds');
         console.log('[Voice] File size:', result.fileSizeFormatted);
         console.log('[Voice] File URI:', result.uri);
         
         setRecordingUri(result.uri);
-        setShowRecordingActions(true); // Show Cancel/Upload buttons
-        
-        // Store in modal state for processing
-        setNoteModal(prev => ({ 
-          ...prev, 
-          recordedAudioUri: result.uri 
-        }));
+        setShowRecordingActions(true);
         
       } else {
-        console.log('[Voice] Recording failed:', result.error);
+        console.error('[Voice] Recording failed:', result.error);
         Alert.alert('Recording Error', result.error || 'Failed to stop recording');
       }
     } catch (error) {
@@ -204,126 +196,115 @@ export default function MaintenanceScreen() {
       console.log('=== CANCELLING VOICE RECORDING ===');
       
       if (isRecording) {
-        // Cancel active recording
         await AudioRecordingService.cancelRecording();
       } else if (recordingUri) {
-        // Delete completed recording
         await AudioRecordingService.deleteRecording(recordingUri);
       }
       
-      // Reset all voice states
-      setIsRecording(false);
-      setRecordingDuration(0);
-      setIsTranscribing(false);
-      setTranscriptionProgress('');
-      setRecordingUri('');
-      setShowRecordingActions(false);
-      
-      // Clear from modal state
-      setNoteModal(prev => ({ 
-        ...prev, 
-        recordedAudioUri: '',
-        voiceText: ''
-      }));
-      
+      resetVoiceStates();
       console.log('[Voice] Recording cancelled and cleaned up');
     } catch (error) {
       console.error('[Voice] Cancel recording error:', error);
-      // Reset states anyway to prevent UI getting stuck
-      setIsRecording(false);
-      setShowRecordingActions(false);
-      setTranscriptionProgress('');
+      resetVoiceStates();
     }
   };
 
   const uploadVoiceRecording = async () => {
     try {
-      console.log('=== UPLOADING VOICE TO API ===');
+      console.log('=== UPLOADING VOICE FILE TO VOICE API ===');
       
       if (!recordingUri) {
         Alert.alert('Error', 'No recording to upload');
         return;
       }
       
-      setIsTranscribing(true);
-      setTranscriptionProgress('Starting upload...');
+      console.log('[Voice] Recording URI:', recordingUri);
+      console.log('[Voice] File extension:', recordingUri.split('.').pop());
+      
+      setIsUploading(true);
+      setUploadStatus('Preparing upload...');
       setShowRecordingActions(false);
       
-      // Upload ONLY to voice API (not task update yet)
-      const result = await uploadVoiceWithProgress(recordingUri, (progress, message) => {
-        console.log('[Voice] Upload progress:', progress + '%', message);
-        setTranscriptionProgress(message);
+      console.log('[Voice] Calling uploadVoiceToAPI function...');
+      console.log('[Voice] This should hit /upload-voice endpoint');
+      
+      const result = await uploadVoiceToAPI(recordingUri, (progress, message) => {
+        console.log('[Voice] Upload progress:', progress, message);
+        setUploadStatus(message || `Uploading... ${progress}%`);
       });
       
-      console.log('[Voice] Voice API result:', result);
+      console.log('[Voice] Voice API upload result:', result);
       
-      if (result.success && result.transcription) {
-        const transcribedText = result.transcription.trim();
-        console.log('[Voice] Transcription successful:', transcribedText);
+      if (result.success && result.fileUrl) {
+        console.log('[Voice] Upload successful, file URL:', result.fileUrl);
         
-        setTranscriptionProgress('Voice transcription complete!');
+        setUploadStatus('Upload complete!');
         
-        // Update modal with the transcribed text ONLY (not saving to task yet)
         setNoteModal(prev => ({ 
           ...prev, 
-          voiceText: transcribedText,
-          note: prev.note + (prev.note ? '\n\n' : '') + transcribedText 
+          voiceFileUrl: result.fileUrl
         }));
         
-        // Clean up recording file since we got the transcription
         await AudioRecordingService.deleteRecording(recordingUri);
         setRecordingUri('');
         
-        // Show success and clear progress after 2 seconds
         setTimeout(() => {
-          setTranscriptionProgress('');
+          setUploadStatus('');
         }, 2000);
         
-        console.log('[Voice] Transcription added to modal, ready for task save');
-        
         Alert.alert(
-          'Voice Transcription Complete!', 
-          `Successfully transcribed: "${transcribedText.substring(0, 100)}${transcribedText.length > 100 ? '...' : ''}"\n\nThe text has been added to your notes. Click "Save & Complete" to finalize the task.`,
+          'Voice Upload Complete!', 
+          `Voice file uploaded successfully to VOICE API!\n\nFile URL: ${result.fileUrl.substring(0, 50)}...\n\nClick "Save & Complete" to finalize the task.`,
           [{ text: 'OK' }]
         );
         
       } else {
-        console.log('[Voice] Transcription failed:', result);
-        setTranscriptionProgress('Voice API failed');
+        console.error('[Voice] Upload failed:', result.error || 'Unknown error');
+        setUploadStatus('Upload failed');
         Alert.alert(
-          'Transcription Error', 
-          'Failed to transcribe audio. Please check your internet connection and try again.',
+          'Upload Error', 
+          result.error || 'Failed to upload voice file to VOICE API. Please try again.',
           [
             { text: 'Cancel', onPress: () => cancelVoiceRecording() },
             { text: 'Retry', onPress: () => uploadVoiceRecording() }
           ]
         );
-        setShowRecordingActions(true); // Show buttons again for retry
+        setShowRecordingActions(true);
         
         setTimeout(() => {
-          setTranscriptionProgress('');
+          setUploadStatus('');
         }, 3000);
       }
     } catch (error) {
-      console.error('[Voice] Upload/transcription error:', error);
-      setTranscriptionProgress('Upload failed');
+      console.error('[Voice] Upload error:', error);
       
+      setUploadStatus('Upload failed');
+      
+      const errorMessage = error.message || '';
       Alert.alert(
         'Upload Error', 
-        `Failed to upload audio: ${error.message}\n\nPlease check your internet connection and try again.`,
+        `Failed to upload voice file: ${errorMessage}`,
         [
           { text: 'Cancel', onPress: () => cancelVoiceRecording() },
           { text: 'Retry', onPress: () => uploadVoiceRecording() }
         ]
       );
-      setShowRecordingActions(true); // Show buttons again for retry
       
+      setShowRecordingActions(true);
       setTimeout(() => {
-        setTranscriptionProgress('');
+        setUploadStatus('');
       }, 3000);
     } finally {
-      setIsTranscribing(false);
+      setIsUploading(false);
     }
+  };
+
+  const resetVoiceStates = () => {
+    setRecordingDuration(0);
+    setIsUploading(false);
+    setUploadStatus('');
+    setRecordingUri('');
+    setShowRecordingActions(false);
   };
 
   const formatDuration = (seconds) => {
@@ -332,7 +313,7 @@ export default function MaintenanceScreen() {
     return `${mins}:${secs.toString().padStart(2, '0')}`;
   };
 
-  // ===== Task helpers for tabs (Due, Upcoming, History) =====
+  // Task helpers
   const toDate = (value) => {
     if (!value) return null;
     try {
@@ -373,7 +354,7 @@ export default function MaintenanceScreen() {
     return (tasks || []).filter((t) => (t.status || '').toLowerCase() === 'completed');
   };
 
-  // ENHANCED task card rendering with COMPLETE details display
+  // Task card rendering
   const renderTaskCard = (task) => {
     const machineNameFromObj =
       task && typeof task.machine === 'object' && task.machine
@@ -430,10 +411,10 @@ export default function MaintenanceScreen() {
             )}
           </View>
 
-          {/* ENHANCED: Complete completion details with ALL saved data */}
+          {/* Completion details */}
           {isCompleted && (
             <View style={styles.completionDetails}>
-              <Text style={[styles.completionTitle, { color: colors.glowLight }]}>📋 Completion Details</Text>
+              <Text style={[styles.completionTitle, { color: colors.glowLight }]}>Completion Details</Text>
               
               <View style={styles.timestampRow}>
                 <Text style={[styles.timestampLabel, { color: colors.tabIconDefault }]}>Started:</Text>
@@ -448,28 +429,46 @@ export default function MaintenanceScreen() {
                 </Text>
               </View>
               
-              {/* Show text notes */}
               {task.note && (
                 <View style={styles.completionNote}>
-                  <Text style={[styles.completionNoteLabel, { color: colors.tabIconDefault }]}>📝 Notes:</Text>
+                  <Text style={[styles.completionNoteLabel, { color: colors.tabIconDefault }]}>Notes:</Text>
                   <Text style={[styles.completionNoteText, { color: colors.text }]}>{task.note}</Text>
                 </View>
               )}
               
-              {/* Show voice transcription */}
-              {task.voiceText && (
+              {task.voiceFileUrl && (
                 <View style={styles.completionVoice}>
-                  <Text style={[styles.completionVoiceLabel, { color: colors.tabIconDefault }]}>🎤 Voice Transcription:</Text>
-                  <View style={styles.voiceTextContainer}>
-                    <Text style={[styles.completionVoiceText, { color: colors.text }]}>{task.voiceText}</Text>
+                  <Text style={[styles.completionVoiceLabel, { color: colors.tabIconDefault }]}>Voice Recording:</Text>
+                  <View style={styles.voiceFileContainer}>
+                    <TouchableOpacity 
+                      style={styles.voiceFileButton}
+                      onPress={() => {
+                        Alert.alert(
+                          'Voice Recording',
+                          'Voice file URL:\n\n' + task.voiceFileUrl,
+                          [
+                            {
+                              text: 'Copy URL',
+                              onPress: () => {
+                                console.log('Voice file URL:', task.voiceFileUrl);
+                              }
+                            },
+                            { text: 'OK' }
+                          ]
+                        );
+                      }}
+                    >
+                      <Text style={[styles.voiceFileButtonText, { color: colors.text }]}>
+                        Voice File Available - Tap to view URL
+                      </Text>
+                    </TouchableOpacity>
                   </View>
                 </View>
               )}
               
-              {/* Show attached images */}
               {task.image && typeof task.image === 'string' && (task.image.startsWith('http') || task.image.startsWith('file://')) && (
                 <View style={styles.completionImage}>
-                  <Text style={[styles.completionImageLabel, { color: colors.tabIconDefault }]}>📸 Attached Image:</Text>
+                  <Text style={[styles.completionImageLabel, { color: colors.tabIconDefault }]}>Attached Image:</Text>
                   <TouchableOpacity 
                     onPress={() => {
                       setImageViewer({ visible: true, imageUrl: task.image });
@@ -480,12 +479,6 @@ export default function MaintenanceScreen() {
                       source={{ uri: task.image }} 
                       style={styles.completionImagePreview}
                       resizeMode="cover"
-                      onError={(error) => {
-                        console.log('[Image] Failed to load image:', task.image, error);
-                      }}
-                      onLoad={() => {
-                        console.log('[Image] Successfully loaded image:', task.image);
-                      }}
                     />
                     <View style={styles.imageOverlay}>
                       <Text style={styles.imageOverlayText}>Tap to view full size</Text>
@@ -527,9 +520,8 @@ export default function MaintenanceScreen() {
                     historyId: task.id, 
                     startTime: task.startTime || '',
                     note: '', 
-                    voiceText: '', 
                     image: '',
-                    recordedAudioUri: ''
+                    voiceFileUrl: ''
                   });
                 }}
               >
@@ -539,7 +531,7 @@ export default function MaintenanceScreen() {
             
             {isCompleted && (
               <View style={[styles.actionButton, { borderColor: colors.border, backgroundColor: 'rgba(0,0,0,0.06)' }]}> 
-                <Text style={[styles.actionButtonText, { color: colors.text }]}>✓ Completed</Text>
+                <Text style={[styles.actionButtonText, { color: colors.text }]}>Completed</Text>
               </View>
             )}
           </View>
@@ -563,7 +555,7 @@ export default function MaintenanceScreen() {
     }
   };
 
-  // Trigger animations when tab changes
+  // Animation effects
   useEffect(() => {
     if (activeTab === 'overview') {
       Animated.sequence([
@@ -670,7 +662,6 @@ export default function MaintenanceScreen() {
     }
   }, [activeTab, overdueAnim, dueSoonAnim, upcomingAnim, goodAnim, overdueFloatAnim, dueSoonFloatAnim, upcomingFloatAnim, goodFloatAnim, overduePressAnim, dueSoonPressAnim, upcomingPressAnim, goodPressAnim]);
 
-  // Cleanup on unmount
   useEffect(() => {
     return () => {
       if (isRecording) {
@@ -784,7 +775,6 @@ export default function MaintenanceScreen() {
   const renderMaintenanceCard = (machine) => {
     const status = getMaintenanceStatus(machine);
     const lastMaintenance = machine.lastMaintenanceDate ? new Date(machine.lastMaintenanceDate).toLocaleDateString() : 'Never';
-    const storedNotes = machine.maintenanceNotes || [];
     
     return (
       <TouchableOpacity
@@ -843,18 +833,6 @@ export default function MaintenanceScreen() {
             {machine.machineBrand || machine.brand} - {machine.machineModel || machine.model}
           </Text>
           
-          {(status.status === 'overdue' || status.status === 'due') && (
-            <Text style={[styles.noteSubtitle, { color: colors.tabIconDefault }]}> 
-              💡 Tap to mark complete & add notes
-            </Text>
-          )}
-          
-          {status.status === 'good' && (
-            <Text style={[styles.noteSubtitle, { color: colors.tabIconDefault }]}> 
-              ✅ Maintenance up to date
-            </Text>
-          )}
-          
           <View style={styles.maintenanceInfo}>
             <View style={styles.infoRow}>
               <Text style={[styles.infoLabel, { color: colors.tabIconDefault }]}>Last Maintenance:</Text>
@@ -876,65 +854,6 @@ export default function MaintenanceScreen() {
                 {status.days} {status.days === 1 ? 'day' : 'days'}
               </Text>
             </View>
-            
-            {machine.nextMaintenanceDate && (
-              <View style={styles.infoRow}>
-                <Text style={[styles.infoLabel, { color: colors.tabIconDefault }]}>Next Maintenance:</Text>
-                <Text style={[styles.infoValue, { color: colors.glowLight }]}>
-                  {new Date(machine.nextMaintenanceDate).toLocaleDateString()}
-                </Text>
-              </View>
-            )}
-            
-            <View style={styles.maintenanceTypesRow}>
-              <Text style={[styles.infoLabel, { color: colors.tabIconDefault }]}>Types:</Text>
-              <View style={styles.typesContainer}>
-                {machine.maintenanceTypes ? (
-                  <>
-                    {machine.maintenanceTypes.slice(0, 3).map((type, index) => (
-                      <View key={index} style={[styles.typeChip, { backgroundColor: colors.glowLight }]}>
-                        <Text style={[styles.typeChipText, { color: colors.background }]}>{type}</Text>
-                      </View>
-                    ))}
-                    {machine.maintenanceTypes.length > 3 && (
-                      <Text style={[styles.moreTypesText, { color: colors.tabIconDefault }]}>
-                        +{machine.maintenanceTypes.length - 3} more
-                      </Text>
-                    )}
-                  </>
-                ) : (
-                  <Text style={[styles.noDataText, { color: colors.tabIconDefault }]}>No types specified</Text>
-                )}
-              </View>
-            </View>
-            
-            {storedNotes && storedNotes.length > 0 && (
-              <View style={styles.notesSection}>
-                <Text style={[styles.infoLabel, { color: colors.tabIconDefault }]}>Notes:</Text>
-                {storedNotes.slice(-2).map((note, index) => (
-                  <View key={index} style={styles.noteItem}>
-                    <Text style={[styles.noteText, { color: colors.glowLight }]}>
-                      • {note.text || note}
-                    </Text>
-                    <View style={styles.noteDateContainer}>
-                      <Text style={[styles.noteDate, { color: colors.tabIconDefault }]}>
-                        {note.date ? new Date(note.date).toLocaleDateString() : 'Recent'}
-                      </Text>
-                      {note.timestamp && (
-                        <Text style={[styles.noteTime, { color: colors.tabIconDefault }]}>
-                          {new Date(note.timestamp).toLocaleTimeString()}
-                        </Text>
-                      )}
-                    </View>
-                  </View>
-                ))}
-                {storedNotes.length > 2 && (
-                  <Text style={[styles.moreNotesText, { color: colors.tabIconDefault }]}>
-                    +{storedNotes.length - 2} more notes
-                  </Text>
-                )}
-              </View>
-            )}
           </View>
         </LinearGradient>
       </TouchableOpacity>
@@ -943,13 +862,6 @@ export default function MaintenanceScreen() {
 
   const renderOverview = () => (
     <View style={styles.tabContent}>
-      {/* Voice API Status Indicator */}
-      {voiceApiStatus === 'failed' && (
-        <View style={styles.apiStatusWarning}>
-          <Text style={styles.apiStatusText}>⚠️ Voice transcription service is currently unavailable</Text>
-        </View>
-      )}
-      
       <View style={styles.statsGrid}>
         <Animated.View 
           style={[
@@ -1241,7 +1153,7 @@ export default function MaintenanceScreen() {
       </View>
 
       <View style={styles.section}>
-        <Text style={[styles.sectionTitle, { color: colors.glowLight }]}>🧰 Your Tasks</Text>
+        <Text style={[styles.sectionTitle, { color: colors.glowLight }]}>Your Tasks</Text>
         {tasks && tasks.length > 0 ? (
           tasks.slice(0, 5).map(renderTaskCard)
         ) : (
@@ -1266,17 +1178,9 @@ export default function MaintenanceScreen() {
             }
           ]}
         >
-          <Text style={[styles.sectionTitle, { color: colors.text }]}>⚠️ Overdue Maintenance</Text>
+          <Text style={[styles.sectionTitle, { color: colors.text }]}>Overdue Maintenance</Text>
           {getOverdueMachines().map(renderMaintenanceCard)}
         </Animated.View>
-      )}
-
-      {getOverdueMachines().length === 0 && getDueMachines().length === 0 && getUpcomingMachines().length === 0 && getGoodMachines().length === 0 && (
-        <View style={styles.section}>
-          <Text style={[styles.noDataText, { color: colors.tabIconDefault }]}>
-            No machines found. Add some machines to get started with maintenance tracking.
-          </Text>
-        </View>
       )}
 
       {getDueMachines().length > 0 && (
@@ -1296,7 +1200,7 @@ export default function MaintenanceScreen() {
             }
           ]}
         >
-          <Text style={[styles.sectionTitle, { color: colors.text }]}>⚠️ Due This Week</Text>
+          <Text style={[styles.sectionTitle, { color: colors.text }]}>Due This Week</Text>
           {getDueMachines().map(renderMaintenanceCard)}
         </Animated.View>
       )}
@@ -1318,7 +1222,7 @@ export default function MaintenanceScreen() {
             }
           ]}
         >
-          <Text style={[styles.sectionTitle, { color: colors.text }]}>✅ All Good</Text>
+          <Text style={[styles.sectionTitle, { color: colors.text }]}>All Good</Text>
           {getGoodMachines().map(renderMaintenanceCard)}
         </Animated.View>
       )}
@@ -1478,13 +1382,12 @@ export default function MaintenanceScreen() {
           </View>
         </Modal>
 
-        {/* COMPLETE Task Completion Modal with FULL Voice Functionality */}
+        {/* Task Completion Modal */}
         <Modal
           visible={noteModal.visible}
           transparent={true}
           animationType="fade"
           onRequestClose={() => {
-            // Clean up any recording in progress
             if (isRecording) {
               cancelVoiceRecording();
             }
@@ -1492,9 +1395,8 @@ export default function MaintenanceScreen() {
               visible: false, 
               historyId: null, 
               note: '', 
-              voiceText: '', 
               image: '',
-              recordedAudioUri: '',
+              voiceFileUrl: '',
               startTime: ''
             });
           }}
@@ -1515,7 +1417,7 @@ export default function MaintenanceScreen() {
                 
                 {/* Text Notes Input */}
                 <View style={styles.inputSection}>
-                  <Text style={[styles.sectionLabel, { color: colors.tabIconDefault }]}>📝 Written Notes</Text>
+                  <Text style={[styles.sectionLabel, { color: colors.tabIconDefault }]}>Written Notes</Text>
                   <TextInput
                     style={[styles.noteInput, { 
                       backgroundColor: colors.background,
@@ -1532,43 +1434,32 @@ export default function MaintenanceScreen() {
                   />
                 </View>
 
-                {/* COMPLETE Voice Recording Section */}
+                {/* Voice Recording Section */}
                 <View style={styles.voiceSection}>
                   <Text style={[styles.sectionLabel, { color: colors.tabIconDefault }]}>
-                    🎤 Voice Note {voiceApiStatus === 'working' ? '(Available)' : '(Unavailable)'}
+                    Voice Recording
                   </Text>
                   
-                  {/* Voice API Status */}
-                  {voiceApiStatus === 'failed' && (
-                    <View style={styles.apiStatusContainer}>
-                      <Text style={[styles.apiStatusText, { color: '#FF6B6B' }]}>
-                        ⚠️ Voice transcription service unavailable
-                      </Text>
-                    </View>
-                  )}
-                  
-                  {/* Main Voice Button */}
-                  {!showRecordingActions && voiceApiStatus !== 'failed' && (
+                  {!showRecordingActions && (
                     <TouchableOpacity 
                       style={[
                         styles.voiceButton, 
                         { 
                           borderColor: isRecording ? '#FF6B6B' : colors.glowLight,
-                          backgroundColor: isRecording ? '#FF6B6B' : isTranscribing ? '#FFA500' : 'transparent'
+                          backgroundColor: isRecording ? '#FF6B6B' : isUploading ? '#FFA500' : 'transparent'
                         }
                       ]} 
                       onPress={isRecording ? stopVoiceRecording : startVoiceRecording}
-                      disabled={isTranscribing}
+                      disabled={isUploading}
                     >
                       <Text style={[styles.voiceButtonText, { color: isRecording ? '#FFFFFF' : colors.glowLight }]}>
-                        {isRecording ? '🛑 Stop Recording' : 
-                         isTranscribing ? '⏳ Processing...' : 
-                         '🎤 Record Voice Note'}
+                        {isRecording ? 'Stop Recording' : 
+                         isUploading ? 'Uploading...' : 
+                         'Record Voice Note'}
                       </Text>
                     </TouchableOpacity>
                   )}
 
-                  {/* REAL-TIME Recording Indicator */}
                   {isRecording && (
                     <View style={styles.recordingIndicator}>
                       <View style={[styles.recordingDot, { backgroundColor: '#FF6B6B' }]} />
@@ -1581,43 +1472,63 @@ export default function MaintenanceScreen() {
                     </View>
                   )}
 
-                  {/* Cancel/Upload Buttons After Recording */}
-                  {showRecordingActions && !isTranscribing && (
+                  {showRecordingActions && !isUploading && (
                     <View style={styles.recordingActionsContainer}>
                       <TouchableOpacity 
                         style={[styles.recordingActionButton, styles.cancelRecordingButton]}
                         onPress={cancelVoiceRecording}
                       >
-                        <Text style={styles.cancelRecordingText}>🗑️ Delete Recording</Text>
+                        <Text style={styles.cancelRecordingText}>Delete Recording</Text>
                       </TouchableOpacity>
                       <TouchableOpacity 
                         style={[styles.recordingActionButton, styles.uploadRecordingButton]}
                         onPress={uploadVoiceRecording}
                       >
-                        <Text style={styles.uploadRecordingText}>📤 Upload & Transcribe</Text>
+                        <Text style={styles.uploadRecordingText}>Upload Voice File</Text>
                       </TouchableOpacity>
                     </View>
                   )}
 
-                  {/* Transcription Progress */}
-                  {isTranscribing && transcriptionProgress && (
-                    <View style={styles.transcriptionIndicator}>
-                      <Text style={[styles.transcriptionText, { color: colors.text }]}>
-                        {transcriptionProgress}
+                  {(isUploading || uploadStatus) && (
+                    <View style={styles.uploadIndicator}>
+                      <Text style={[styles.uploadText, { color: colors.text }]}>
+                        {uploadStatus}
                       </Text>
                     </View>
                   )}
 
-                  {/* Voice Text Display */}
-                  {!isRecording && !isTranscribing && noteModal.voiceText && (
-                    <View style={styles.voiceTextDisplayContainer}>
-                      <Text style={[styles.voiceTextLabel, { color: colors.tabIconDefault }]}>
-                        🎤 Transcribed Voice Note:
+                  {!isRecording && !isUploading && noteModal.voiceFileUrl && (
+                    <View style={styles.voiceFileDisplayContainer}>
+                      <Text style={[styles.voiceFileLabel, { color: colors.tabIconDefault }]}>
+                        Voice File Uploaded:
                       </Text>
-                      <View style={styles.voiceTextBox}>
-                        <Text style={[styles.voiceTextDisplay, { color: colors.text }]}>
-                          {noteModal.voiceText}
-                        </Text>
+                      <View style={styles.voiceFileUrlBox}>
+                        <TouchableOpacity 
+                          onPress={() => {
+                            Alert.alert(
+                              'Voice File URL',
+                              noteModal.voiceFileUrl,
+                              [
+                                {
+                                  text: 'Copy URL',
+                                  onPress: () => {
+                                    console.log('Voice file URL:', noteModal.voiceFileUrl);
+                                  }
+                                },
+                                { text: 'OK' }
+                              ]
+                            );
+                          }}
+                        >
+                          <Text style={[styles.voiceFileUrlText, { color: colors.text }]}>
+                            {noteModal.voiceFileUrl.length > 50 
+                              ? noteModal.voiceFileUrl.substring(0, 50) + '...' 
+                              : noteModal.voiceFileUrl}
+                          </Text>
+                          <Text style={[styles.voiceFileUrlHint, { color: colors.tabIconDefault }]}>
+                            Tap to view full URL
+                          </Text>
+                        </TouchableOpacity>
                       </View>
                     </View>
                   )}
@@ -1625,7 +1536,7 @@ export default function MaintenanceScreen() {
 
                 {/* Image Upload Section */}
                 <View style={styles.imageSection}>
-                  <Text style={[styles.sectionLabel, { color: colors.tabIconDefault }]}>📸 Photo Attachment</Text>
+                  <Text style={[styles.sectionLabel, { color: colors.tabIconDefault }]}>Photo Attachment</Text>
                   
                   <TouchableOpacity 
                     style={[
@@ -1654,15 +1565,14 @@ export default function MaintenanceScreen() {
                         const asset = result.assets && result.assets[0];
                         if (!asset?.uri) return;
                         
-                        // Check file size (10MB limit)
                         if (asset.fileSize && asset.fileSize > 10 * 1024 * 1024) {
                           Alert.alert('File Too Large', 'Please select an image smaller than 10MB.');
                           return;
                         }
                         
-                        console.log('[Image] Uploading image...', asset.uri);
+                        console.log('[Image] Uploading image to IMAGE API...', asset.uri);
                         const uploadRes = await uploadImage(asset.uri);
-                        console.log('[Image] Upload response:', uploadRes);
+                        console.log('[Image] Image API response:', uploadRes);
                         
                         let imageUrl = null;
                         if (uploadRes?.file_url) {
@@ -1692,14 +1602,13 @@ export default function MaintenanceScreen() {
                     }}
                   >
                     <Text style={[styles.modalButtonText, { color: noteModal.image ? '#FFFFFF' : colors.glowLight }]}>
-                      {noteModal.image ? '✅ Image Attached' : '📸 Add Image (10MB max)'}
+                      {noteModal.image ? 'Image Attached' : 'Add Image (10MB max)'}
                     </Text>
                   </TouchableOpacity>
 
-                  {/* Image Preview */}
                   {noteModal.image && (
                     <View style={styles.imagePreviewContainer}>
-                      <Text style={[styles.imagePreviewLabel, { color: colors.tabIconDefault }]}>📸 Attached Image:</Text>
+                      <Text style={[styles.imagePreviewLabel, { color: colors.tabIconDefault }]}>Attached Image:</Text>
                       <TouchableOpacity
                         onPress={() => setImageViewer({ visible: true, imageUrl: noteModal.image })}
                       >
@@ -1707,12 +1616,6 @@ export default function MaintenanceScreen() {
                           source={{ uri: noteModal.image }} 
                           style={styles.imagePreview}
                           resizeMode="cover"
-                          onError={(error) => {
-                            console.log('[Image] Failed to load preview:', noteModal.image, error);
-                          }}
-                          onLoad={() => {
-                            console.log('[Image] Successfully loaded preview:', noteModal.image);
-                          }}
                         />
                         <View style={styles.imagePreviewOverlay}>
                           <Text style={styles.imagePreviewOverlayText}>Tap to view</Text>
@@ -1733,9 +1636,8 @@ export default function MaintenanceScreen() {
                         visible: false, 
                         historyId: null, 
                         note: '', 
-                        voiceText: '', 
                         image: '',
-                        recordedAudioUri: '',
+                        voiceFileUrl: '',
                         startTime: ''
                       });
                     }}
@@ -1746,19 +1648,18 @@ export default function MaintenanceScreen() {
                   </TouchableOpacity>
                   <TouchableOpacity
                     style={[styles.modalButton, styles.submitButton, { backgroundColor: colors.glowLight }]}
-                    disabled={isRecording || isTranscribing}
+                    disabled={isRecording || isUploading}
                     onPress={async () => {
                       try {
                         const endTime = new Date().toISOString();
                         const finalNote = noteModal.note || '';
 
-                        // CRITICAL: Only pass voiceText to task update, not audio file
                         const updateData = {
                           status: 'completed',
                           startTime: noteModal.startTime,
                           endTime: endTime,
                           note: finalNote,
-                          voiceText: noteModal.voiceText || '', // ONLY the transcribed text
+                          voiceFileUrl: noteModal.voiceFileUrl || '',
                           image: noteModal.image || ''
                         };
                         
@@ -1771,9 +1672,8 @@ export default function MaintenanceScreen() {
                           visible: false, 
                           historyId: null, 
                           note: '', 
-                          voiceText: '', 
                           image: '',
-                          recordedAudioUri: '',
+                          voiceFileUrl: '',
                           startTime: ''
                         });
                         
@@ -1785,7 +1685,7 @@ export default function MaintenanceScreen() {
                     }}
                   >
                     <Text style={[styles.modalButtonText, { color: colors.background }]}>
-                      {isRecording || isTranscribing ? 'Please Wait...' : 'Save & Complete Task'}
+                      {isRecording || isUploading ? 'Please Wait...' : 'Save & Complete Task'}
                     </Text>
                   </TouchableOpacity>
                 </View>
@@ -1794,7 +1694,7 @@ export default function MaintenanceScreen() {
           </View>
         </Modal>
 
-        {/* ENHANCED Full-Screen Image Viewer Modal */}
+        {/* Full-Screen Image Viewer Modal */}
         <Modal
           visible={imageViewer.visible}
           transparent={true}
@@ -1825,12 +1725,6 @@ export default function MaintenanceScreen() {
                     source={{ uri: imageViewer.imageUrl }} 
                     style={styles.imageViewerImage}
                     resizeMode="contain"
-                    onError={(error) => {
-                      console.log('[ImageViewer] Failed to load:', imageViewer.imageUrl, error);
-                    }}
-                    onLoad={() => {
-                      console.log('[ImageViewer] Successfully loaded:', imageViewer.imageUrl);
-                    }}
                   />
                 ) : (
                   <Text style={[styles.noImageText, { color: colors.text }]}>No image to display</Text>
@@ -1905,20 +1799,6 @@ const styles = StyleSheet.create({
   },
   tabContent: {
     paddingBottom: 30,
-  },
-  apiStatusWarning: {
-    backgroundColor: 'rgba(255, 107, 107, 0.1)',
-    borderColor: 'rgba(255, 107, 107, 0.3)',
-    borderWidth: 1,
-    borderRadius: 8,
-    padding: 12,
-    marginBottom: 15,
-    alignItems: 'center',
-  },
-  apiStatusText: {
-    fontSize: 14,
-    fontWeight: '600',
-    textAlign: 'center',
   },
   statsGrid: {
     flexDirection: 'row',
@@ -2028,62 +1908,6 @@ const styles = StyleSheet.create({
     fontSize: 14,
     fontWeight: '600',
   },
-  maintenanceTypesRow: {
-    marginTop: 10,
-  },
-  typesContainer: {
-    flexDirection: 'row',
-    flexWrap: 'wrap',
-    gap: 5,
-    marginTop: 5,
-  },
-  typeChip: {
-    paddingHorizontal: 8,
-    paddingVertical: 4,
-    borderRadius: 12,
-  },
-  typeChipText: {
-    fontSize: 12,
-    fontWeight: '600',
-  },
-  moreTypesText: {
-    fontSize: 12,
-    fontWeight: '600',
-    marginLeft: 5,
-    alignSelf: 'center',
-  },
-  notesSection: {
-    marginTop: 15,
-    paddingTop: 10,
-    borderTopWidth: 1,
-    borderTopColor: 'rgba(255, 255, 255, 0.1)',
-  },
-  noteItem: {
-    marginBottom: 8,
-  },
-  noteText: {
-    fontSize: 14,
-    lineHeight: 20,
-  },
-  noteDateContainer: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    gap: 8,
-    marginTop: 2,
-  },
-  noteDate: {
-    fontSize: 12,
-  },
-  noteTime: {
-    fontSize: 11,
-    opacity: 0.8,
-  },
-  moreNotesText: {
-    fontSize: 12,
-    fontWeight: '600',
-    marginTop: 5,
-    textAlign: 'center',
-  },
   noDataText: {
     textAlign: 'center',
     fontSize: 16,
@@ -2114,12 +1938,6 @@ const styles = StyleSheet.create({
   },
   completionIcon: {
     fontSize: 12,
-  },
-  noteSubtitle: {
-    fontSize: 12,
-    fontWeight: '600',
-    marginTop: 5,
-    textAlign: 'center',
   },
   modalOverlay: {
     flex: 1,
@@ -2157,8 +1975,6 @@ const styles = StyleSheet.create({
     textAlign: 'center',
     marginBottom: 20,
   },
-  
-  // Input sections
   inputSection: {
     width: '100%',
     marginBottom: 20,
@@ -2184,17 +2000,6 @@ const styles = StyleSheet.create({
     fontSize: 16,
     minHeight: 100,
     textAlignVertical: 'top',
-  },
-  
-  // Voice recording styles
-  apiStatusContainer: {
-    padding: 10,
-    backgroundColor: 'rgba(255, 107, 107, 0.1)',
-    borderRadius: 8,
-    borderWidth: 1,
-    borderColor: 'rgba(255, 107, 107, 0.3)',
-    marginBottom: 10,
-    alignItems: 'center',
   },
   voiceButton: {
     borderWidth: 2,
@@ -2265,7 +2070,7 @@ const styles = StyleSheet.create({
     fontWeight: '600',
     fontSize: 14,
   },
-  transcriptionIndicator: {
+  uploadIndicator: {
     alignItems: 'center',
     padding: 15,
     backgroundColor: 'rgba(255, 165, 0, 0.1)',
@@ -2274,33 +2079,36 @@ const styles = StyleSheet.create({
     borderColor: 'rgba(255, 165, 0, 0.3)',
     marginBottom: 10,
   },
-  transcriptionText: {
+  uploadText: {
     fontSize: 14,
     fontWeight: '600',
     textAlign: 'center',
   },
-  voiceTextDisplayContainer: {
+  voiceFileDisplayContainer: {
     marginBottom: 10,
   },
-  voiceTextLabel: {
+  voiceFileLabel: {
     fontSize: 12,
     fontWeight: '600',
     marginBottom: 5,
   },
-  voiceTextBox: {
+  voiceFileUrlBox: {
     padding: 12,
     backgroundColor: 'rgba(0, 255, 0, 0.1)',
     borderRadius: 10,
     borderWidth: 1,
     borderColor: 'rgba(0, 255, 0, 0.3)',
   },
-  voiceTextDisplay: {
+  voiceFileUrlText: {
     fontSize: 14,
     lineHeight: 20,
+    fontFamily: 'monospace',
+  },
+  voiceFileUrlHint: {
+    fontSize: 12,
+    marginTop: 5,
     fontStyle: 'italic',
   },
-  
-  // Image styles
   imageButton: {
     borderWidth: 1,
     borderRadius: 10,
@@ -2342,8 +2150,6 @@ const styles = StyleSheet.create({
     fontWeight: '600',
     textAlign: 'center',
   },
-  
-  // Modal buttons
   modalButtons: {
     flexDirection: 'row',
     justifyContent: 'space-around',
@@ -2381,8 +2187,6 @@ const styles = StyleSheet.create({
     fontSize: 14,
     fontWeight: '600',
   },
-  
-  // Completion details styles
   completionDetails: {
     marginTop: 15,
     padding: 12,
@@ -2425,8 +2229,6 @@ const styles = StyleSheet.create({
     lineHeight: 20,
     fontStyle: 'italic',
   },
-  
-  // Voice text in completed tasks
   completionVoice: {
     marginTop: 10,
     paddingTop: 10,
@@ -2438,20 +2240,26 @@ const styles = StyleSheet.create({
     fontWeight: '500',
     marginBottom: 5,
   },
-  voiceTextContainer: {
+  voiceFileContainer: {
     padding: 10,
-    backgroundColor: 'rgba(0, 255, 0, 0.1)',
+    backgroundColor: 'rgba(0, 123, 255, 0.1)',
     borderRadius: 8,
     borderWidth: 1,
-    borderColor: 'rgba(0, 255, 0, 0.2)',
+    borderColor: 'rgba(0, 123, 255, 0.2)',
   },
-  completionVoiceText: {
+  voiceFileButton: {
+    padding: 8,
+    backgroundColor: 'rgba(0, 123, 255, 0.05)',
+    borderRadius: 6,
+    borderWidth: 1,
+    borderColor: 'rgba(0, 123, 255, 0.3)',
+  },
+  voiceFileButtonText: {
     fontSize: 14,
     lineHeight: 20,
-    fontStyle: 'italic',
+    textAlign: 'center',
+    fontWeight: '500',
   },
-  
-  // Image display in completed tasks
   completionImage: {
     marginTop: 10,
     paddingTop: 10,
@@ -2488,8 +2296,6 @@ const styles = StyleSheet.create({
     fontWeight: '600',
     textAlign: 'center',
   },
-  
-  // Full-screen image viewer
   imageViewerOverlay: {
     position: 'absolute',
     top: 0,

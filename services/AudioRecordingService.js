@@ -1,4 +1,4 @@
-// AudioRecordingService.js - ROBUST version handling "no valid audio data" errors
+// AudioRecordingService.js - CLEAN version for recording only
 import { Audio } from 'expo-av';
 import * as FileSystem from 'expo-file-system';
 import { Platform } from 'react-native';
