@@ -931,6 +931,7 @@ export default function MaintenanceScreen() {
 
   const renderOverview = () => (
     <View style={styles.tabContent}>
+      {/*
       <View style={styles.statsGrid}>
         <Animated.View 
           style={[
@@ -1220,6 +1221,7 @@ export default function MaintenanceScreen() {
           </TouchableOpacity>
         </Animated.View>
       </View>
+      */}
 
       <View style={styles.section}>
         <Text style={[styles.sectionTitle, { color: colors.glowLight }]}>Your Tasks</Text>
@@ -1359,7 +1361,6 @@ export default function MaintenanceScreen() {
           {[
             { key: 'overview', label: 'Overview', icon: '📊' },
             { key: 'due', label: 'Due', icon: '⚠️' },
-            { key: 'upcoming', label: 'Upcoming', icon: '📅' },
             { key: 'last', label: 'History', icon: '📋' },
           ].map((tab) => (
             <TouchableOpacity
@@ -1390,7 +1391,6 @@ export default function MaintenanceScreen() {
         >
           {activeTab === 'overview' && renderOverview()}
           {activeTab === 'due' && renderDueMaintenance()}
-          {activeTab === 'upcoming' && renderUpcoming()}
           {activeTab === 'last' && renderLastMaintenance()}
         </ScrollView>
         
